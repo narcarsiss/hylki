@@ -1,176 +1,200 @@
 /* ==========================================================================
    HYLKI RETRO TERMINAL (CRT) THEME
    Engineered with authentic phosphor glow, monospace layouts, scanlines,
-   and zero-radius angular terminal framing. She's a ripper!
+   zero-radius angular framing, and aggressive widget tree overrides.
+   G'day mate, she'll turn the whole machine into a VT220 terminal!
    ========================================================================== */
 
-@define-color accent_color #00ff66;
+@define-color accent_color #33ff77;
 @define-color accent_bg_color #00ff66;
-@define-color accent_fg_color #000000;
-@define-color window_bg_color #080d09;
+@define-color accent_fg_color #050805;
+@define-color window_bg_color #050805;
 @define-color window_fg_color #33ff77;
-@define-color view_bg_color #0a110c;
+@define-color view_bg_color #050805;
 @define-color view_fg_color #33ff77;
-@define-color headerbar_bg_color #050805;
-@define-color headerbar_fg_color #00ff66;
-@define-color card_bg_color #0e1710;
+@define-color headerbar_bg_color #040704;
+@define-color headerbar_fg_color #33ff77;
+@define-color card_bg_color #080f08;
 @define-color card_fg_color #33ff77;
-@define-color dialog_bg_color #0c140e;
+@define-color dialog_bg_color #050805;
 @define-color dialog_fg_color #33ff77;
-@define-color popover_bg_color #0c140e;
+@define-color popover_bg_color #050805;
 @define-color popover_fg_color #33ff77;
-@define-color shade_color rgba(0, 255, 102, 0.15);
-@define-color scrollbar_outline_color rgba(0, 255, 102, 0.3);
 
 * {
-    font-family: 'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace;
+    font-family: 'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace !important;
     letter-spacing: 0.03em;
-    -gtk-secondary-caret-color: #00ff66;
+    border-radius: 0px !important;
+    -gtk-secondary-caret-color: #33ff77;
 }
 
-/* Scanline and phosphor background simulation */
+/* 1. Root Window & Background */
 window,
 .background {
-    background-color: #080d09;
-    color: #33ff77;
+    background-color: #050805 !important;
+    color: #33ff77 !important;
+    background-image: 
+        repeating-linear-gradient(
+            0deg,
+            rgba(0, 0, 0, 0.45) 0px,
+            rgba(0, 0, 0, 0.45) 1px,
+            transparent 1px,
+            transparent 3px
+        ),
+        radial-gradient(circle at center, rgba(0, 255, 102, 0.03) 0%, transparent 80%),
+        url('https://images.unsplash.com/photo-1550751827-4bd374c3f58b?auto=format&fit=crop&w=1920&q=80') !important;
+    background-size: auto, auto, cover !important;
+    background-blend-mode: overlay, normal, normal !important;
+    box-shadow: inset 0 0 80px rgba(0, 255, 102, 0.15) !important;
+}
+
+/* 2. Headerbar (Terminal Control Bar) */
+headerbar {
+    background-color: #040704 !important;
+    background-image: none !important;
+    color: #33ff77 !important;
+    border-bottom: 2px solid #00bb4e !important;
+    box-shadow: 0 2px 10px rgba(0, 255, 102, 0.2) !important;
+    padding: 2px 6px !important;
+}
+
+headerbar .title,
+headerbar label {
+    color: #33ff77 !important;
+    text-shadow: 0 0 6px rgba(51, 255, 119, 0.8) !important;
+    font-weight: bold !important;
+}
+
+/* 3. Navigation Sidebar */
+.navigation-sidebar,
+navigationbar,
+stacksidebar {
+    background-color: #040704 !important;
+    color: #33ff77 !important;
+    border-right: 2px solid #00bb4e !important;
     background-image: repeating-linear-gradient(
         0deg,
-        rgba(0, 0, 0, 0.22) 0px,
-        rgba(0, 0, 0, 0.22) 1px,
+        rgba(0, 0, 0, 0.4) 0px,
+        rgba(0, 0, 0, 0.4) 1px,
         transparent 1px,
-        transparent 2px
-    );
+        transparent 3px
+    ) !important;
 }
 
-/* Translucent terminal window when capability requested */
-window.transparent-window,
-window.transparent-window .background {
-    background-color: rgba(8, 13, 9, 0.94);
-}
-
-/* Header bar and navigation */
-headerbar {
-    background-color: #050805;
-    color: #00ff66;
-    border-bottom: 2px solid #00bb4e;
-    box-shadow: inset 0 -1px 4px rgba(0, 255, 102, 0.2);
-}
-
-headerbar .title {
-    color: #00ff66;
-    font-weight: 700;
-    text-shadow: 0 0 4px rgba(0, 255, 102, 0.7);
-}
-
-/* Sharp box geometry - zero pill curves in a VT100 terminal! */
-button,
-entry,
-popover,
-dialog,
-.card,
-row,
-scrolledwindow {
+.navigation-sidebar row {
     border-radius: 0px !important;
+    border-bottom: 1px solid rgba(0, 187, 78, 0.25) !important;
+    color: #33ff77 !important;
+    padding: 8px 12px !important;
 }
 
-/* Push buttons styled as mechanical terminal keys */
-button {
-    background-color: #0d1710;
-    color: #00ff66;
-    border: 1px solid #00bb4e;
-    padding: 6px 14px;
-    box-shadow: inset 0 0 2px rgba(0, 255, 102, 0.25);
-    transition: all 120ms ease-in-out;
+.navigation-sidebar row:selected {
+    background-color: #33ff77 !important;
+    color: #050805 !important;
+    font-weight: 900 !important;
+    text-shadow: none !important;
 }
 
-button:hover {
-    background-color: #00bb4e;
-    color: #000000;
-    box-shadow: 0 0 8px rgba(0, 255, 102, 0.8);
+.navigation-sidebar row:selected label {
+    color: #050805 !important;
 }
 
-button:active {
-    background-color: #00ff66;
-    color: #000000;
-}
-
-button.suggested-action {
-    background-color: #009940;
-    color: #000000;
-    font-weight: bold;
-    border: 1px solid #00ff66;
-}
-
-button.destructive-action {
-    background-color: #2b0000;
-    color: #ff3333;
-    border: 1px solid #ff3333;
-}
-
-button.destructive-action:hover {
-    background-color: #ff3333;
-    color: #000000;
-}
-
-/* Input entries */
-entry {
-    background-color: #040705;
-    color: #00ff66;
-    border: 1px solid #00bb4e;
-    padding: 6px 10px;
-    box-shadow: inset 0 0 6px rgba(0, 255, 102, 0.2);
-}
-
-entry:focus {
-    border-color: #00ff66;
-    box-shadow: 0 0 6px rgba(0, 255, 102, 0.7);
-}
-
-/* List views & mail item rows */
+/* 4. List Views & Item Rows */
 listview,
 list {
-    background-color: transparent;
-    color: #33ff77;
+    background-color: transparent !important;
+    color: #33ff77 !important;
+    background-image: repeating-linear-gradient(
+        0deg,
+        rgba(0, 0, 0, 0.3) 0px,
+        rgba(0, 0, 0, 0.3) 1px,
+        transparent 1px,
+        transparent 3px
+    ) !important;
 }
 
 row {
-    border-bottom: 1px solid rgba(0, 187, 78, 0.2);
-    padding: 8px 12px;
+    border-radius: 0px !important;
+    border-bottom: 1px solid rgba(0, 187, 78, 0.25) !important;
+    padding: 8px 12px !important;
+    color: #33ff77 !important;
+    background-color: transparent !important;
 }
 
 row:hover {
-    background-color: rgba(0, 255, 102, 0.12);
+    background-color: rgba(51, 255, 119, 0.12) !important;
 }
 
-/* Inverse video active selection */
 row:selected {
-    background-color: #00ff66 !important;
-    color: #000000 !important;
-    font-weight: bold;
+    background-color: #33ff77 !important;
+    color: #050805 !important;
+    font-weight: bold !important;
+    box-shadow: 0 0 12px rgba(51, 255, 119, 0.5) !important;
 }
 
 row:selected label {
-    color: #000000 !important;
+    color: #050805 !important;
 }
 
-/* Unread indicators and dots */
-.unread-indicator,
-.unread-dot {
-    background-color: #00ff66;
-    box-shadow: 0 0 6px #00ff66;
+/* 5. Buttons (Phosphor Terminal Pushers) */
+button {
+    background-color: #081008 !important;
+    background-image: none !important;
+    color: #33ff77 !important;
+    border: 1px solid #00bb4e !important;
     border-radius: 0px !important;
+    padding: 4px 12px !important;
+    box-shadow: inset 0 0 4px rgba(0, 255, 102, 0.2) !important;
+}
+
+button:hover {
+    background-color: #00bb4e !important;
+    color: #050805 !important;
+    box-shadow: 0 0 8px rgba(51, 255, 119, 0.8) !important;
+}
+
+button:active {
+    background-color: #33ff77 !important;
+    color: #050805 !important;
+}
+
+button.suggested-action,
+button.accent {
+    background-color: #33ff77 !important;
+    color: #050805 !important;
+    font-weight: bold !important;
+}
+
+/* 6. Text Views & Entries */
+textview,
+textview text {
+    background-color: #030603 !important;
+    color: #33ff77 !important;
+    font-family: monospace !important;
+}
+
+entry {
+    background-color: #030603 !important;
+    color: #33ff77 !important;
+    border: 1px solid #00bb4e !important;
+    border-radius: 0px !important;
+    padding: 6px 10px !important;
+    box-shadow: inset 0 0 6px rgba(0, 255, 102, 0.2) !important;
+}
+
+entry:focus {
+    border-color: #33ff77 !important;
+    box-shadow: 0 0 8px rgba(51, 255, 119, 0.7) !important;
 }
 
 /* Scrollbars */
 scrollbar slider {
-    background-color: rgba(0, 255, 102, 0.35);
-    border: 1px solid #00bb4e;
+    background-color: rgba(51, 255, 119, 0.4) !important;
+    border: 1px solid #00bb4e !important;
     border-radius: 0px !important;
-    min-width: 6px;
-    min-height: 6px;
 }
 
 scrollbar slider:hover {
-    background-color: #00ff66;
-    box-shadow: 0 0 6px rgba(0, 255, 102, 0.8);
+    background-color: #33ff77 !important;
+    box-shadow: 0 0 8px rgba(51, 255, 119, 0.9) !important;
 }

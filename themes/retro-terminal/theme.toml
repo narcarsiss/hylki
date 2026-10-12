@@ -7,5 +7,5 @@ style = "dark"
 
 [window]
 transparent = true
-opacity = 0.94
+opacity = 0.95
 blur = true

@@ -1,0 +1,46 @@
+/* Outlook 365 WebKit Reader (Microsoft Fluent Clean White) */
+html, body {
+    background-color: #ffffff !important;
+    color: #201f1e !important;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif !important;
+    line-height: 1.55 !important;
+    margin: 20px 24px !important;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    color: #0078d4 !important;
+    font-weight: 600 !important;
+    border-bottom: 1px solid #edebe9 !important;
+    padding-bottom: 6px !important;
+}
+
+a, a:visited {
+    color: #0078d4 !important;
+    text-decoration: none !important;
+}
+
+a:hover {
+    text-decoration: underline !important;
+}
+
+blockquote {
+    border-left: 3px solid #0078d4 !important;
+    background-color: #f3f2f1 !important;
+    color: #605e5c !important;
+    margin: 12px 0 !important;
+    padding: 8px 16px !important;
+}
+
+code, pre {
+    background-color: #f3f2f1 !important;
+    color: #201f1e !important;
+    border: 1px solid #edebe9 !important;
+    padding: 2px 6px !important;
+    font-family: 'Consolas', monospace !important;
+}
+
+table, th, td {
+    border: 1px solid #edebe9 !important;
+    border-collapse: collapse !important;
+    padding: 6px 12px !important;
+}

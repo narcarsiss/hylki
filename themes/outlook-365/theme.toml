@@ -1,9 +1,9 @@
 [theme]
-id = "mailbird"
-name = "Mailbird Sleek"
+id = "outlook-365"
+name = "Outlook 365 (Fluent)"
 author = "Hylki Systems Architect"
 version = "1.0.0"
-style = "dark"
+style = "light"
 
 [window]
 transparent = false

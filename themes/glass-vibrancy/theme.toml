@@ -1,0 +1,11 @@
+[theme]
+id = "glass-vibrancy"
+name = "Glass Vibrancy (Deep Acrylic)"
+author = "Hylki Systems Architect"
+version = "1.0.0"
+style = "dark"
+
+[window]
+transparent = true
+opacity = 0.50
+blur = true

@@ -1,11 +1,11 @@
 [theme]
 id = "apple-mail"
-name = "Apple Mail"
+name = "Apple Mail (macOS Sequoia)"
 author = "Hylki Systems Architect"
 version = "1.0.0"
 style = "adaptive"
 
 [window]
 transparent = true
-opacity = 0.90
+opacity = 0.92
 blur = true

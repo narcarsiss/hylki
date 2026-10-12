@@ -1,0 +1,44 @@
+/* Glass Vibrancy Dark Translucent-Friendly WebKit Reader */
+html, body {
+    background-color: rgba(15, 20, 30, 0.75) !important;
+    backdrop-filter: blur(20px) !important;
+    color: #f0f6fc !important;
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif !important;
+    line-height: 1.65 !important;
+    margin: 24px !important;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    color: #58a6ff !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+    padding-bottom: 6px !important;
+}
+
+a, a:visited {
+    color: #58a6ff !important;
+    text-decoration: underline !important;
+}
+
+blockquote {
+    border-left: 3px solid #58a6ff !important;
+    background-color: rgba(88, 166, 255, 0.1) !important;
+    color: #c9d1d9 !important;
+    margin: 12px 0 !important;
+    padding: 8px 16px !important;
+    border-radius: 4px !important;
+}
+
+code, pre {
+    background-color: rgba(0, 0, 0, 0.4) !important;
+    color: #79c0ff !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    border-radius: 6px !important;
+    padding: 3px 8px !important;
+    font-family: monospace !important;
+}
+
+table, th, td {
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    border-collapse: collapse !important;
+    padding: 8px 12px !important;
+}

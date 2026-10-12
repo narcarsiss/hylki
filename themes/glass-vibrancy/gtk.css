@@ -1,0 +1,186 @@
+/* ==========================================================================
+   HYLKI GLASS VIBRANCY (DEEP ACRYLIC) THEME
+   Engineered with ultra-translucent dark acrylic panels, backdrop-filter blur,
+   high-resolution abstract wallpaper injection, and full widget tree overrides.
+   G'day mate, pure aesthetic glass floating in dark cyberspace!
+   ========================================================================== */
+
+@define-color accent_color #58a6ff;
+@define-color accent_bg_color #1f6feb;
+@define-color accent_fg_color #ffffff;
+@define-color window_bg_color rgba(20, 20, 20, 0.5);
+@define-color window_fg_color #f0f6fc;
+@define-color view_bg_color rgba(25, 30, 42, 0.45);
+@define-color view_fg_color #f0f6fc;
+@define-color headerbar_bg_color rgba(20, 20, 20, 0.5);
+@define-color headerbar_fg_color #f0f6fc;
+@define-color card_bg_color rgba(30, 35, 50, 0.5);
+@define-color card_fg_color #f0f6fc;
+@define-color dialog_bg_color rgba(22, 27, 34, 0.85);
+@define-color dialog_fg_color #f0f6fc;
+@define-color popover_bg_color rgba(22, 27, 34, 0.85);
+@define-color popover_fg_color #f0f6fc;
+
+* {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif !important;
+    -gtk-secondary-caret-color: #58a6ff;
+}
+
+/* 1. Root Window & Background (Acrylic Translucency with Remote Wallpaper) */
+window,
+.background {
+    background-color: rgba(20, 20, 20, 0.5) !important;
+    color: #f0f6fc !important;
+    background-image: url('https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=1920&q=80') !important;
+    background-size: cover !important;
+    background-position: center !important;
+    background-repeat: no-repeat !important;
+    background-attachment: fixed !important;
+}
+
+/* 2. Headerbar */
+headerbar {
+    background-color: rgba(20, 20, 20, 0.5) !important;
+    backdrop-filter: blur(30px) !important;
+    color: #f0f6fc !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12) !important;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35) !important;
+    padding: 6px 12px !important;
+}
+
+headerbar .title,
+headerbar label {
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6) !important;
+}
+
+/* 3. Navigation Sidebar */
+.navigation-sidebar,
+navigationbar,
+stacksidebar {
+    background-color: rgba(20, 20, 20, 0.5) !important;
+    backdrop-filter: blur(25px) !important;
+    color: #f0f6fc !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.12) !important;
+    padding: 8px !important;
+}
+
+.navigation-sidebar row {
+    border-radius: 8px !important;
+    margin: 2px 4px !important;
+    padding: 8px 12px !important;
+    color: #c9d1d9 !important;
+    background-color: transparent !important;
+    border: 1px solid transparent !important;
+    transition: all 120ms ease;
+}
+
+.navigation-sidebar row:hover {
+    background-color: rgba(255, 255, 255, 0.08) !important;
+    border-color: rgba(255, 255, 255, 0.15) !important;
+    color: #ffffff !important;
+}
+
+.navigation-sidebar row:selected {
+    background-color: rgba(31, 111, 235, 0.45) !important;
+    border: 1px solid #58a6ff !important;
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    box-shadow: 0 0 14px rgba(88, 166, 255, 0.35) !important;
+}
+
+.navigation-sidebar row:selected label {
+    color: #ffffff !important;
+}
+
+/* 4. List Views & Item Rows (Translucent Floating Cards) */
+listview,
+list {
+    background-color: rgba(25, 30, 42, 0.4) !important;
+    color: #f0f6fc !important;
+    padding: 6px !important;
+}
+
+row {
+    border-radius: 8px !important;
+    margin: 3px 6px !important;
+    padding: 10px 14px !important;
+    color: #f0f6fc !important;
+    background-color: rgba(255, 255, 255, 0.03) !important;
+    border: 1px solid rgba(255, 255, 255, 0.07) !important;
+    backdrop-filter: blur(16px) !important;
+    transition: all 140ms ease !important;
+}
+
+row:hover {
+    background-color: rgba(255, 255, 255, 0.09) !important;
+    border-color: rgba(255, 255, 255, 0.2) !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25) !important;
+}
+
+row:selected {
+    background-color: rgba(31, 111, 235, 0.5) !important;
+    border: 1px solid #58a6ff !important;
+    color: #ffffff !important;
+    box-shadow: 0 0 16px rgba(88, 166, 255, 0.45) !important;
+}
+
+row:selected label {
+    color: #ffffff !important;
+}
+
+/* 5. Buttons (Glass Action Buttons) */
+button {
+    background-color: rgba(255, 255, 255, 0.08) !important;
+    color: #f0f6fc !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    border-radius: 8px !important;
+    padding: 6px 14px !important;
+    backdrop-filter: blur(12px) !important;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2) !important;
+}
+
+button:hover {
+    background-color: rgba(255, 255, 255, 0.16) !important;
+    border-color: rgba(255, 255, 255, 0.3) !important;
+}
+
+button.suggested-action,
+button.accent {
+    background-color: rgba(31, 111, 235, 0.6) !important;
+    border: 1px solid #58a6ff !important;
+    color: #ffffff !important;
+    box-shadow: 0 0 14px rgba(88, 166, 255, 0.4) !important;
+}
+
+/* 6. Text Views & Entries */
+textview,
+textview text {
+    background-color: rgba(15, 20, 30, 0.5) !important;
+    color: #f0f6fc !important;
+}
+
+entry {
+    background-color: rgba(255, 255, 255, 0.07) !important;
+    border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    border-radius: 8px !important;
+    padding: 7px 12px !important;
+    color: #ffffff !important;
+    backdrop-filter: blur(10px) !important;
+}
+
+entry:focus {
+    border-color: #58a6ff !important;
+    box-shadow: 0 0 10px rgba(88, 166, 255, 0.4) !important;
+}
+
+/* Scrollbars */
+scrollbar slider {
+    background-color: rgba(255, 255, 255, 0.2) !important;
+    border-radius: 8px !important;
+}
+
+scrollbar slider:hover {
+    background-color: rgba(88, 166, 255, 0.6) !important;
+}

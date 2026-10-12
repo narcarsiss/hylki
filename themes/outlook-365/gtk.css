@@ -1,0 +1,190 @@
+/* ==========================================================================
+   HYLKI OUTLOOK 365 (FLUENT) THEME
+   Engineered with Microsoft Fluent UI aesthetics: #0078d4 accents, ribbon header,
+   dense enterprise spacing, sharp subtle borders, and full widget tree overrides.
+   G'day mate, looks just like Redmond's finest desktop suite!
+   ========================================================================== */
+
+@define-color accent_color #0078d4;
+@define-color accent_bg_color #0078d4;
+@define-color accent_fg_color #ffffff;
+@define-color window_bg_color #f3f2f1;
+@define-color window_fg_color #201f1e;
+@define-color view_bg_color #ffffff;
+@define-color view_fg_color #201f1e;
+@define-color headerbar_bg_color #0078d4;
+@define-color headerbar_fg_color #ffffff;
+@define-color card_bg_color #ffffff;
+@define-color card_fg_color #201f1e;
+@define-color dialog_bg_color #ffffff;
+@define-color dialog_fg_color #201f1e;
+@define-color popover_bg_color #ffffff;
+@define-color popover_fg_color #201f1e;
+
+* {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif !important;
+    border-radius: 2px !important;
+    -gtk-secondary-caret-color: #0078d4;
+}
+
+/* 1. Root Window & Background */
+window,
+.background {
+    background-color: #f3f2f1 !important;
+    color: #201f1e !important;
+    background-image: 
+        repeating-linear-gradient(90deg, rgba(0, 120, 212, 0.02) 0px, rgba(0, 120, 212, 0.02) 1px, transparent 1px, transparent 32px),
+        url('https://images.unsplash.com/photo-1557683316-973673baf926?auto=format&fit=crop&w=1920&q=80') !important;
+    background-size: auto, cover !important;
+    background-blend-mode: normal, soft-light !important;
+}
+
+/* 2. Headerbar (Fluent Ribbon Top Bar) */
+headerbar {
+    background-color: #0078d4 !important;
+    background-image: linear-gradient(180deg, #0078d4 0%, #106ebe 100%) !important;
+    color: #ffffff !important;
+    border-bottom: 1px solid #005a9e !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    padding: 3px 8px !important;
+    min-height: 42px !important;
+}
+
+headerbar .title,
+headerbar label {
+    color: #ffffff !important;
+    font-weight: 600 !important;
+}
+
+/* 3. Navigation Sidebar */
+.navigation-sidebar,
+navigationbar,
+stacksidebar {
+    background-color: #f3f2f1 !important;
+    color: #201f1e !important;
+    border-right: 1px solid #e1dfdd !important;
+    padding: 4px !important;
+}
+
+.navigation-sidebar row {
+    border-radius: 2px !important;
+    border-bottom: none !important;
+    color: #201f1e !important;
+    padding: 6px 10px !important;
+    margin: 1px 2px !important;
+}
+
+.navigation-sidebar row:hover {
+    background-color: #edebe9 !important;
+}
+
+.navigation-sidebar row:selected {
+    background-color: #eff6fc !important;
+    color: #0078d4 !important;
+    font-weight: 600 !important;
+    border-left: 3px solid #0078d4 !important;
+}
+
+.navigation-sidebar row:selected label {
+    color: #0078d4 !important;
+}
+
+/* 4. List Views & Item Rows */
+listview,
+list {
+    background-color: #ffffff !important;
+    color: #201f1e !important;
+}
+
+row {
+    border-radius: 0px !important;
+    border-bottom: 1px solid #edebe9 !important;
+    padding: 6px 12px !important;
+    color: #201f1e !important;
+    background-color: #ffffff !important;
+    transition: background-color 100ms ease-out;
+}
+
+row:hover {
+    background-color: #f3f2f1 !important;
+}
+
+row:selected {
+    background-color: #eff6fc !important;
+    color: #0078d4 !important;
+    border-left: 3px solid #0078d4 !important;
+    font-weight: 600 !important;
+}
+
+row:selected label {
+    color: #0078d4 !important;
+}
+
+/* 5. Buttons (Fluent Command Bar Action Buttons) */
+button {
+    background-color: #ffffff !important;
+    color: #201f1e !important;
+    border: 1px solid #8a8886 !important;
+    border-radius: 2px !important;
+    padding: 5px 12px !important;
+    font-weight: 500 !important;
+}
+
+button:hover {
+    background-color: #f3f2f1 !important;
+    border-color: #323130 !important;
+    color: #201f1e !important;
+}
+
+button:active {
+    background-color: #edebe9 !important;
+}
+
+button.suggested-action,
+button.accent {
+    background-color: #0078d4 !important;
+    background-image: none !important;
+    color: #ffffff !important;
+    border: 1px solid #005a9e !important;
+    font-weight: 600 !important;
+}
+
+button.suggested-action:hover,
+button.accent:hover {
+    background-color: #106ebe !important;
+    color: #ffffff !important;
+}
+
+/* 6. Text Views & Entries */
+textview,
+textview text {
+    background-color: #ffffff !important;
+    color: #201f1e !important;
+    font-family: 'Segoe UI', system-ui, sans-serif !important;
+}
+
+entry {
+    background-color: #ffffff !important;
+    color: #201f1e !important;
+    border: 1px solid #8a8886 !important;
+    border-bottom: 2px solid #605e5c !important;
+    border-radius: 2px !important;
+    padding: 5px 8px !important;
+}
+
+entry:focus {
+    border-color: #0078d4 !important;
+    border-bottom: 2px solid #0078d4 !important;
+}
+
+/* Scrollbars */
+scrollbar slider {
+    background-color: #c8c6c4 !important;
+    border-radius: 2px !important;
+    min-width: 6px;
+    min-height: 6px;
+}
+
+scrollbar slider:hover {
+    background-color: #8a8886 !important;
+}

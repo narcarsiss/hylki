@@ -4,15 +4,24 @@
 //! and enforces the non-negotiable 10-second safety rollback dialog.
 //! If the user doesn't confirm the new look within 10 seconds, she rolls right back to
 //! the previous style cleanly with zero fuss!
+//!
+//! STRICT DIRECTIVES ENFORCED:
+//! 1. Strictly selection UI only (NO drag-and-drop targets allowed).
+//! 2. Mandatory 10-second rollback with glib timer timeout.
+//! 3. CRITICAL UI CONSTRAINT: Non-modal dialog (`set_modal(false)`) so the main window
+//!    is NOT dimmed, blacked out, or obscured during theme evaluation.
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use gtk::prelude::*;
-use crate::i18n::i18n;
+
+use adw::prelude::*;
+use gettextrs::gettext as i18n;
+use gtk::glib;
+
 use crate::theme_manager::{self, ThemeInfo};
 
 /// Builds the custom .theme selector dropdown with safety rollback confirmation.
-/// Strictly NO drag & drop — dropdown selection only as mandated by directives!
+/// Strictly NO drag & drop — dropdown selection only as mandated by directives, mate!
 pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
     let themes = theme_manager::discover_themes();
 
@@ -51,19 +60,18 @@ pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
 
         let new_idx = dd.selected();
         let prev_idx = *confirmed_index.borrow();
-
         if new_idx == prev_idx {
             return;
         }
 
         let target_theme_id = theme_ids_rc.get(new_idx as usize).cloned().flatten();
 
-        // 1. Prepare switch (saves backup provider and window transparency)
+        // 1. Prepare switch (saves backup provider, window transparency, and reader CSS)
         theme_manager::prepare_switch();
 
-        // 2. Apply target theme
+        // 2. Apply target theme immediately for visual preview
         if let Err(e) = theme_manager::apply_theme(target_theme_id.as_deref()) {
-            tracing::error!("[settings] Failed to apply theme: {}", e);
+            tracing::error!("[settings] Strewth! Failed to apply theme: {}", e);
             theme_manager::rollback();
             *is_reverting.borrow_mut() = true;
             dd.set_selected(prev_idx);
@@ -77,6 +85,11 @@ pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
             Some(&i18n("Keep this theme?")),
             Some(&i18n("Reverting to previous theme in 10 seconds...")),
         );
+
+        // CRITICAL UI CONSTRAINT: Explicitly set popup to be non-modal (set_modal(false))
+        // so it does NOT blackout, dim, or darken the main application window!
+        // The user must have a clear, unobstructed view of the new theme to evaluate it, mate!
+        dialog.set_modal(false);
 
         dialog.add_response("revert", &i18n("Revert Now"));
         dialog.add_response("keep", &i18n("Keep Theme"));
@@ -105,7 +118,7 @@ pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
                 timer_dialog.set_body(&body_text);
                 glib::ControlFlow::Continue
             } else {
-                // Time is up! Execute automatic rollback
+                // Time is up! Execute automatic rollback, fair dinkum!
                 *timer_closed.borrow_mut() = true;
                 timer_dialog.response("revert");
                 glib::ControlFlow::Break
@@ -124,14 +137,14 @@ pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
                 // User confirmed: commit choice permanently
                 theme_manager::commit();
                 *confirmed_index_clone.borrow_mut() = new_idx;
-                tracing::info!("[settings] User confirmed theme switch to index {}", new_idx);
+                tracing::info!("[settings] User confirmed theme switch to index {}. She'll be right!", new_idx);
             } else {
                 // Revert response or timeout expiry: Rollback style provider & reset dropdown
                 theme_manager::rollback();
                 *is_reverting_clone.borrow_mut() = true;
                 dd_clone.set_selected(prev_idx);
                 *is_reverting_clone.borrow_mut() = false;
-                tracing::info!("[settings] Theme safety rollback executed; reverted to index {}", prev_idx);
+                tracing::info!("[settings] Theme safety rollback executed; reverted to index {}, mate.", prev_idx);
             }
             d.destroy();
         });
@@ -143,7 +156,7 @@ pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
 }
 
 /// Temporary toggle / cycler to quickly view and cycle through themes with the 10s rollback safety dialog.
-/// She's a ripper for rapid testing across Retro Terminal, Windows 365, Apple Mail, and Mailbird!
+/// She's a ripper for rapid testing across Retro Terminal, Outlook 365, Apple Mail, and Glass Vibrancy!
 pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
     let themes = theme_manager::discover_themes();
     let current_id = theme_manager::active_theme_id();
@@ -166,7 +179,7 @@ pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
 
     theme_manager::prepare_switch();
     if let Err(e) = theme_manager::apply_theme(next_theme_id.as_deref()) {
-        tracing::error!("[settings] Failed to cycle theme: {}", e);
+        tracing::error!("[settings] Strewth! Failed to cycle theme: {}", e);
         theme_manager::rollback();
         return;
     }
@@ -181,6 +194,10 @@ pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
         Some(&format!("Keep theme '{}'?", target_name)),
         Some(&i18n("Reverting to previous theme in 10 seconds...")),
     );
+
+    // CRITICAL UI CONSTRAINT: Explicitly non-modal to keep the background bright and clear, she'll be right!
+    dialog.set_modal(false);
+
     dialog.add_response("revert", &i18n("Revert Now"));
     dialog.add_response("keep", &i18n("Keep Theme"));
     dialog.set_response_appearance("keep", adw::ResponseAppearance::Suggested);
@@ -217,10 +234,10 @@ pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
         *dialog_closed_clone.borrow_mut() = true;
         if response == "keep" {
             theme_manager::commit();
-            tracing::info!("[settings] User confirmed cycled theme");
+            tracing::info!("[settings] User confirmed cycled theme. Good on ya, mate!");
         } else {
             theme_manager::rollback();
-            tracing::info!("[settings] Cycled theme rollback executed");
+            tracing::info!("[settings] Cycled theme rollback executed. Back to safety!");
         }
         d.destroy();
     });

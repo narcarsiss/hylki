@@ -1,75 +1,43 @@
-/* ==========================================================================
-   HYLKI RETRO TERMINAL (CRT) - WEBKIT EMAIL BODY READER
-   Matches the monospace green phosphor aesthetic inside WebKit6.
-   ========================================================================== */
-
-body, html {
-    background-color: #080d09 !important;
+/* Retro Terminal (CRT) WebKit Email Reader */
+html, body {
+    background-color: #050805 !important;
     color: #33ff77 !important;
     font-family: 'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace !important;
-    font-size: 14px !important;
-    line-height: 1.55 !important;
-    background-image: repeating-linear-gradient(
-        0deg,
-        rgba(0, 0, 0, 0.2) 0px,
-        rgba(0, 0, 0, 0.2) 1px,
-        transparent 1px,
-        transparent 2px
-    ) !important;
+    line-height: 1.6 !important;
+    margin: 16px !important;
+    text-shadow: 0 0 3px rgba(51, 255, 119, 0.4) !important;
 }
 
 h1, h2, h3, h4, h5, h6 {
-    color: #00ff66 !important;
-    text-shadow: 0 0 4px rgba(0, 255, 102, 0.7) !important;
+    color: #33ff77 !important;
+    text-shadow: 0 0 6px rgba(51, 255, 119, 0.7) !important;
     border-bottom: 1px solid #00bb4e !important;
     padding-bottom: 4px !important;
-    font-weight: 700 !important;
 }
 
-a {
-    color: #55ff99 !important;
+a, a:visited {
+    color: #66ff99 !important;
     text-decoration: underline !important;
 }
 
-a:hover {
-    color: #00ff66 !important;
-    background-color: rgba(0, 255, 102, 0.2) !important;
-}
-
 blockquote {
-    border-left: 2px solid #00ff66 !important;
-    margin: 12px 0 !important;
-    padding-left: 12px !important;
-    color: #28cc60 !important;
-    background: rgba(0, 255, 102, 0.05) !important;
+    border-left: 3px solid #00bb4e !important;
+    background-color: rgba(0, 255, 102, 0.05) !important;
+    color: #29cc60 !important;
+    margin: 8px 0 !important;
+    padding: 8px 12px !important;
 }
 
-pre, code {
-    font-family: inherit !important;
-    background-color: #040705 !important;
-    color: #00ff66 !important;
+code, pre {
+    background-color: #020402 !important;
+    color: #33ff77 !important;
     border: 1px solid #00bb4e !important;
     padding: 2px 6px !important;
+    font-family: monospace !important;
 }
 
-table {
+table, th, td {
+    border: 1px solid #00bb4e !important;
     border-collapse: collapse !important;
-    border: 1px solid #00bb4e !important;
-}
-
-th, td {
-    border: 1px solid #00bb4e !important;
     padding: 6px 10px !important;
-}
-
-th {
-    background-color: #00ff66 !important;
-    color: #000000 !important;
-    font-weight: bold !important;
-}
-
-hr {
-    border: none !important;
-    border-top: 1px dashed #00bb4e !important;
-    margin: 20px 0 !important;
 }
