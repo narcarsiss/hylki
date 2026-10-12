@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use gtk::prelude::*;
+use adw::prelude::*;
 use tracing::{debug, error, info, warn};
 
 /// Manifest schema defined inside `theme.toml` of each .theme bundle.
@@ -120,6 +121,9 @@ thread_local! {
 
     /// Backup transparency flag for rollback
     static SAVED_TRANSPARENCY: RefCell<bool> = const { RefCell::new(false) };
+
+    /// Backup adw::ColorScheme for 10s rollback safety, fair dinkum!
+    static SAVED_COLOR_SCHEME: RefCell<Option<adw::ColorScheme>> = const { RefCell::new(None) };
 
     /// Weak references to active WebKit UserContentManagers to update on theme switch
     static REGISTERED_UCMS: RefCell<Vec<glib::WeakRef<webkit6::UserContentManager>>> = const { RefCell::new(Vec::new()) };
@@ -337,7 +341,12 @@ pub fn prepare_switch() {
         });
         *trans.borrow_mut() = is_trans;
     });
-    debug!("[theme_manager] Saved theme backup state for safety rollback.");
+        let manager = adw::StyleManager::default();
+    SAVED_COLOR_SCHEME.with(|cs| {
+        *cs.borrow_mut() = Some(manager.color_scheme());
+    });
+    debug!("[theme_manager] Saved adw::StyleManager scheme {:?} for safety rollback.", manager.color_scheme());
+    debug!("[theme_manager] Saved theme backup state for safety rollback, mate!");
 }
 
 /// Rollback the GTK CSS provider, window transparency, and WebKit CSS to the saved state.
@@ -384,6 +393,15 @@ pub fn rollback() {
         ACTIVE_READER_CSS.with(|cur| *cur.borrow_mut() = saved.borrow().clone());
     });
     sync_registered_ucms();
+
+    // 4. Revert adw::StyleManager color scheme, fair dinkum!
+    let manager = adw::StyleManager::default();
+    SAVED_COLOR_SCHEME.with(|cs| {
+        if let Some(scheme) = cs.borrow().as_ref() {
+            manager.set_color_scheme(*scheme);
+            info!("[theme_manager] Reverted adw::StyleManager color scheme to {:?}, mate.", scheme);
+        }
+    });
 }
 
 /// User confirmed the theme: commit and discard backup.
@@ -391,6 +409,7 @@ pub fn commit() {
     SAVED_PROVIDER.with(|p| *p.borrow_mut() = None);
     SAVED_THEME_ID.with(|t| *t.borrow_mut() = None);
     SAVED_READER_CSS.with(|r| *r.borrow_mut() = None);
+    SAVED_COLOR_SCHEME.with(|cs| *cs.borrow_mut() = None);
     info!("[theme_manager] Theme switch committed and confirmed by user!");
 }
 
@@ -417,6 +436,9 @@ pub fn apply_theme(target_id: Option<&str>) -> Result<(), Box<dyn std::error::Er
             ACTIVE_THEME_ID.with(|t| *t.borrow_mut() = None);
             ACTIVE_READER_CSS.with(|r| *r.borrow_mut() = None);
             sync_registered_ucms();
+                        let manager = adw::StyleManager::default();
+            manager.set_color_scheme(adw::ColorScheme::Default);
+            debug!("[theme_manager] Reset adw::StyleManager to default color scheme, mate.");
             info!("[theme_manager] Custom theme cleared, back to standard GNOME look.");
             Ok(())
         }
@@ -470,6 +492,23 @@ pub fn apply_theme(target_id: Option<&str>) -> Result<(), Box<dyn std::error::Er
                 ACTIVE_READER_CSS.with(|r| *r.borrow_mut() = None);
             }
             sync_registered_ucms();
+
+                        // 4. Synchronize libadwaita StyleManager palette mode (ForceLight, ForceDark, Default)
+            let manager = adw::StyleManager::default();
+            match theme.manifest.theme.style.as_deref().map(|s| s.to_lowercase()).as_deref() {
+                Some("light") => {
+                    manager.set_color_scheme(adw::ColorScheme::ForceLight);
+                    info!("[theme_manager] Synchronized adw::StyleManager to ForceLight for theme '{}'", theme.name);
+                }
+                Some("dark") => {
+                    manager.set_color_scheme(adw::ColorScheme::ForceDark);
+                    info!("[theme_manager] Synchronized adw::StyleManager to ForceDark for theme '{}'", theme.name);
+                }
+                _ => {
+                    manager.set_color_scheme(adw::ColorScheme::Default);
+                    info!("[theme_manager] Synchronized adw::StyleManager to Default for theme '{}'", theme.name);
+                }
+            }
 
             ACTIVE_THEME_ID.with(|t| *t.borrow_mut() = Some(theme.id.clone()));
             info!("[theme_manager] Successfully applied theme '{}'", theme.name);
