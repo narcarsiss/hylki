@@ -142,29 +142,17 @@ row:selected label {
 button {
     border-radius: 0px !important;
     background-color: transparent !important;
-    background-image: none !important;
+    border: 1px solid #33ff77 !important;
     color: #33ff77 !important;
-    border: 1px solid #00bb4e !important;
-    padding: 4px 12px !important;
-    box-shadow: inset 0 0 4px rgba(0, 255, 102, 0.2) !important;
+    box-shadow: none !important;
 }
-
 button:hover {
-    background-color: #00bb4e !important;
-    color: #050805 !important;
-    box-shadow: 0 0 8px rgba(51, 255, 119, 0.8) !important;
+    background-color: rgba(51, 255, 119, 0.1) !important;
 }
-
-button:active {
-    background-color: #33ff77 !important;
+button.suggested-action, button.primary {
+    background-image: repeating-linear-gradient(0deg, #0a2e12, #0a2e12 1px, #33ff77 1px, #33ff77 2px) !important;
     color: #050805 !important;
-}
-
-button.suggested-action,
-button.accent {
-    background-color: #33ff77 !important;
-    color: #050805 !important;
-    font-weight: bold !important;
+    border: 1px solid #33ff77 !important;
 }
 
 /* 6. Text Views & Entries */

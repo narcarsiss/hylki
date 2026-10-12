@@ -103,6 +103,17 @@ pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
         let timer_seconds = Rc::new(RefCell::new(20));
         let dialog_closed = Rc::new(RefCell::new(false));
 
+        // Mandatory 20-second safety rollback timer, fair dinkum!
+        let rollback_dialog = dialog.clone();
+        let rollback_closed = dialog_closed.clone();
+        glib::timeout_add_seconds_local(20, move || {
+            if !*rollback_closed.borrow() {
+                *rollback_closed.borrow_mut() = true;
+                rollback_dialog.response("revert");
+            }
+            glib::ControlFlow::Break
+        });
+
         // Ticking countdown timer
         let timer_dialog = dialog.clone();
         let timer_closed = dialog_closed.clone();
@@ -209,6 +220,17 @@ pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
 
     let timer_seconds = Rc::new(RefCell::new(20));
     let dialog_closed = Rc::new(RefCell::new(false));
+
+    // Mandatory 20-second safety rollback timer, she'll be right!
+    let cycle_rollback_dialog = dialog.clone();
+    let cycle_rollback_closed = dialog_closed.clone();
+    glib::timeout_add_seconds_local(20, move || {
+        if !*cycle_rollback_closed.borrow() {
+            *cycle_rollback_closed.borrow_mut() = true;
+            cycle_rollback_dialog.response("revert");
+        }
+        glib::ControlFlow::Break
+    });
 
     let timer_dialog = dialog.clone();
     let timer_closed = dialog_closed.clone();

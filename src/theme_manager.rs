@@ -105,6 +105,9 @@ impl ThemeManager {
     }
 }
 
+// Thread-safe reference to active provider state across threads, fair dinkum!
+static THREAD_SAFE_ACTIVE_PROVIDER: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 thread_local! {
     /// Active custom GTK CSS provider at STYLE_PROVIDER_PRIORITY_USER
     static ACTIVE_PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
@@ -325,6 +328,11 @@ pub fn set_main_window(win: &adw::ApplicationWindow) {
 }
 
 /// Returns the currently active custom theme ID, if any.
+/// Get a clone of the active gtk::CssProvider reference
+pub fn active_provider() -> Option<gtk::CssProvider> {
+    ACTIVE_PROVIDER.with(|p| p.borrow().clone())
+}
+
 pub fn active_theme_id() -> Option<String> {
     ACTIVE_THEME_ID.with(|slot| slot.borrow().clone())
 }

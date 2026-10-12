@@ -8,20 +8,20 @@
 @define-color accent_color #58a6ff;
 @define-color accent_bg_color #1f6feb;
 @define-color accent_fg_color #ffffff;
-@define-color window_bg_color rgba(20, 20, 20, 0.5);
-@define-color window_fg_color #f0f6fc;
+@define-color window_bg_color rgba(20, 20, 20, 0.45);
+@define-color window_fg_color #ffffff;
 @define-color view_bg_color rgba(25, 30, 42, 0.45);
-@define-color view_fg_color #f0f6fc;
-@define-color headerbar_bg_color rgba(20, 20, 20, 0.5);
-@define-color headerbar_fg_color #f0f6fc;
+@define-color view_fg_color #ffffff;
+@define-color headerbar_bg_color rgba(20, 20, 20, 0.45);
+@define-color headerbar_fg_color #ffffff;
 @define-color sidebar_bg_color rgba(20, 20, 20, 0.5);
-@define-color sidebar_fg_color #f0f6fc;
+@define-color sidebar_fg_color #ffffff;
 @define-color card_bg_color rgba(30, 35, 50, 0.5);
-@define-color card_fg_color #f0f6fc;
+@define-color card_fg_color #ffffff;
 @define-color dialog_bg_color rgba(22, 27, 34, 0.85);
-@define-color dialog_fg_color #f0f6fc;
+@define-color dialog_fg_color #ffffff;
 @define-color popover_bg_color rgba(22, 27, 34, 0.85);
-@define-color popover_fg_color #f0f6fc;
+@define-color popover_fg_color #ffffff;
 
 * {
     font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif !important;
@@ -134,18 +134,20 @@ row:selected label {
 
 /* 5. Buttons (Glass Action Buttons) */
 button {
-    background-color: rgba(255, 255, 255, 0.08) !important;
-    color: #f0f6fc !important;
-    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    background: transparent !important;
+    background-color: transparent !important;
+    color: #ffffff !important;
+    text-shadow: 0px 1px 3px rgba(0, 0, 0, 0.8) !important;
+    border: 1px solid rgba(255, 255, 255, 0.25) !important;
     border-radius: 8px !important;
     padding: 6px 14px !important;
     backdrop-filter: blur(12px) !important;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2) !important;
 }
 
 button:hover {
-    background-color: rgba(255, 255, 255, 0.16) !important;
-    border-color: rgba(255, 255, 255, 0.3) !important;
+    background: rgba(255, 255, 255, 0.12) !important;
+    border-color: rgba(255, 255, 255, 0.4) !important;
+    color: #ffffff !important;
 }
 
 button.suggested-action,

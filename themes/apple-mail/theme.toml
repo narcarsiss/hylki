@@ -4,6 +4,7 @@ name = "Apple Mail (macOS Sequoia)"
 author = "Hylki Systems Architect"
 version = "1.0.0"
 style = "light"
+layout = "unified"
 
 [window]
 transparent = false
