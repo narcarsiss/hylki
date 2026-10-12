@@ -141,3 +141,89 @@ pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
 
     dropdown
 }
+
+/// Temporary toggle / cycler to quickly view and cycle through themes with the 10s rollback safety dialog.
+/// She's a ripper for rapid testing across Retro Terminal, Windows 365, Apple Mail, and Mailbird!
+pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
+    let themes = theme_manager::discover_themes();
+    let current_id = theme_manager::active_theme_id();
+
+    // Cycle sequence: Default (None) -> themes[0] -> themes[1] ... -> Default (None)
+    let next_theme_id = match current_id {
+        None => themes.first().map(|t| t.id.clone()),
+        Some(curr) => {
+            if let Some(pos) = themes.iter().position(|t| t.id == curr) {
+                if pos + 1 < themes.len() {
+                    Some(themes[pos + 1].id.clone())
+                } else {
+                    None // Wrap back around to default stock look
+                }
+            } else {
+                themes.first().map(|t| t.id.clone())
+            }
+        }
+    };
+
+    theme_manager::prepare_switch();
+    if let Err(e) = theme_manager::apply_theme(next_theme_id.as_deref()) {
+        tracing::error!("[settings] Failed to cycle theme: {}", e);
+        theme_manager::rollback();
+        return;
+    }
+
+    let target_name = next_theme_id
+        .as_deref()
+        .and_then(|id| themes.iter().find(|t| t.id == id).map(|t| t.name.as_str()))
+        .unwrap_or("Default (Stock Look)");
+
+    let dialog = adw::MessageDialog::new(
+        parent_win,
+        Some(&format!("Keep theme '{}'?", target_name)),
+        Some(&i18n("Reverting to previous theme in 10 seconds...")),
+    );
+    dialog.add_response("revert", &i18n("Revert Now"));
+    dialog.add_response("keep", &i18n("Keep Theme"));
+    dialog.set_response_appearance("keep", adw::ResponseAppearance::Suggested);
+    dialog.set_response_appearance("revert", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("keep"));
+    dialog.set_close_response("revert");
+
+    let timer_seconds = Rc::new(RefCell::new(10));
+    let dialog_closed = Rc::new(RefCell::new(false));
+
+    let timer_dialog = dialog.clone();
+    let timer_closed = dialog_closed.clone();
+    let timer_secs = timer_seconds.clone();
+
+    glib::timeout_add_seconds_local(1, move || {
+        if *timer_closed.borrow() {
+            return glib::ControlFlow::Break;
+        }
+        let mut secs = timer_secs.borrow_mut();
+        if *secs > 1 {
+            *secs -= 1;
+            let body_text = format!("Reverting to previous theme in {} seconds...", *secs);
+            timer_dialog.set_body(&body_text);
+            glib::ControlFlow::Continue
+        } else {
+            *timer_closed.borrow_mut() = true;
+            timer_dialog.response("revert");
+            glib::ControlFlow::Break
+        }
+    });
+
+    let dialog_closed_clone = dialog_closed.clone();
+    dialog.connect_response(move |d, response| {
+        *dialog_closed_clone.borrow_mut() = true;
+        if response == "keep" {
+            theme_manager::commit();
+            tracing::info!("[settings] User confirmed cycled theme");
+        } else {
+            theme_manager::rollback();
+            tracing::info!("[settings] Cycled theme rollback executed");
+        }
+        d.destroy();
+    });
+
+    dialog.present();
+}
