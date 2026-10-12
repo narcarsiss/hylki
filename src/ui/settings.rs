@@ -16,6 +16,7 @@ use std::rc::Rc;
 
 use gtk::prelude::*;
 use adw::prelude::*;
+use libadwaita::prelude::MessageDialogExt;
 use gettextrs::gettext as i18n;
 use gtk::glib;
 
