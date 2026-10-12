@@ -3706,7 +3706,7 @@ impl MessageView {
                 if let Some(id) = crate::theme_manager::active_theme_id() {
                     match id.as_str() {
                         "retro-terminal" | "glass-vibrancy" => return true,
-                        "apple-mail" | "outlook-365" => return false,
+                        "untry-lightweight" | "apple-mail" | "outlook-365" => return false,
                         _ => {}
                     }
                 }

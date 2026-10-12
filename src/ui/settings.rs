@@ -190,7 +190,7 @@ pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
 }
 
 /// Temporary toggle / cycler to quickly view and cycle through themes with the 20s rollback safety dialog.
-/// She's a ripper for rapid testing across Retro Terminal, Outlook 365, Apple Mail, and Glass Vibrancy!
+/// She's a ripper for rapid testing across Untry Lightweight, Apple Mail, Outlook 365, Retro Terminal, and Glass!
 pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
     // Dismiss any active in-flight rollback session to prevent timer cross-talk, mate!
     ACTIVE_ROLLBACK_SESSION.with(|session| {
@@ -203,9 +203,15 @@ pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
     let mut themes = theme_manager::discover_themes();
     let current_id = theme_manager::active_theme_id();
 
-    // Canonical order for test cycling across the 4 newly defined themes:
-    // Retro Terminal -> Glass Vibrancy -> Apple Mail -> Outlook 365
-    let target_order = ["retro-terminal", "glass-vibrancy", "apple-mail", "outlook-365"];
+    // Canonical order for test cycling across the 5 newly defined themes, mate:
+    // Untry Lightweight -> Apple Mail -> Outlook 365 -> Retro Terminal -> Glass Vibrancy
+    let target_order = [
+        "untry-lightweight",
+        "apple-mail",
+        "outlook-365",
+        "retro-terminal",
+        "glass-vibrancy",
+    ];
     themes.sort_by_key(|t| {
         target_order
             .iter()
@@ -337,7 +343,7 @@ pub fn temp_toggle(parent_win: Option<&gtk::Window>) {
 }
 
 /// Builds a dedicated Temp Toggle button widget that can be plugged into UI bars.
-/// She's a ripper for rapid testing across Retro Terminal, Outlook 365, Apple Mail, and Glass Vibrancy!
+/// She's a ripper for rapid testing across Untry Lightweight, Apple Mail, Outlook 365, Retro Terminal, and Glass!
 pub fn build_temp_toggle(parent_win: Option<&gtk::Window>) -> gtk::Button {
     let btn = gtk::Button::builder()
         .icon_name("media-playlist-repeat-symbolic")

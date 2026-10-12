@@ -1,0 +1,67 @@
+/* ==========================================================================
+   HYLKI UNTRY LIGHTWEIGHT THEME
+   Engineered for low-spec hardware and legacy systems, mate!
+   Zero transitions, zero animations, pure native GTK rendering.
+   She'll be right, blazingly fast on any old box.
+   ========================================================================== */
+
+@define-color window_bg_color #f0f0f0;
+@define-color window_fg_color #1a1a1a;
+@define-color view_bg_color #ffffff;
+@define-color view_fg_color #1a1a1a;
+@define-color headerbar_bg_color #e2e2e2;
+@define-color headerbar_fg_color #1a1a1a;
+@define-color sidebar_bg_color #e8e8e8;
+@define-color sidebar_fg_color #1a1a1a;
+@define-color card_bg_color #ffffff;
+@define-color card_fg_color #1a1a1a;
+@define-color accent_color #2563eb;
+@define-color accent_bg_color #2563eb;
+@define-color accent_fg_color #ffffff;
+@define-color dialog_bg_color #f0f0f0;
+@define-color dialog_fg_color #1a1a1a;
+@define-color popover_bg_color #ffffff;
+@define-color popover_fg_color #1a1a1a;
+
+/* Performance: Strip all transitions and animations completely */
+* {
+    transition: none !important;
+    animation: none !important;
+    box-shadow: none !important;
+}
+
+window, .background {
+    background-color: @window_bg_color;
+    color: @window_fg_color;
+}
+
+headerbar {
+    background-color: @headerbar_bg_color;
+    color: @headerbar_fg_color;
+    border-bottom: 1px solid #cccccc;
+    box-shadow: none;
+}
+
+textview, textview text {
+    background-color: @view_bg_color;
+    color: @view_fg_color;
+}
+
+.action-hub {
+    background-color: #ffffff;
+    border: 1px solid #cccccc;
+    border-radius: 4px;
+    padding: 4px;
+}
+
+button {
+    border-radius: 2px !important;
+    padding: 4px 8px !important;
+    border: 1px solid #cccccc !important;
+    background: #e6e6e6 !important;
+    color: #1a1a1a !important;
+}
+
+button:hover {
+    background: #d8d8d8 !important;
+}

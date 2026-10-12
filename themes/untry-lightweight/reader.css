@@ -1,0 +1,13 @@
+/* Untry Lightweight Reader styling */
+body {
+    background-color: #ffffff;
+    color: #1a1a1a;
+    font-family: sans-serif;
+    line-height: 1.4;
+    margin: 16px;
+}
+
+* {
+    transition: none !important;
+    animation: none !important;
+}

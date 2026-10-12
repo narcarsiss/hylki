@@ -1,0 +1,12 @@
+[theme]
+id = "untry-lightweight"
+name = "Untry Lightweight"
+author = "Hylki Systems Architect"
+version = "1.0.0"
+style = "light"
+layout = "overlay"
+
+[window]
+transparent = false
+opacity = 1.0
+blur = false
