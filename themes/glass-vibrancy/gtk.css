@@ -14,6 +14,8 @@
 @define-color view_fg_color #f0f6fc;
 @define-color headerbar_bg_color rgba(20, 20, 20, 0.5);
 @define-color headerbar_fg_color #f0f6fc;
+@define-color sidebar_bg_color rgba(20, 20, 20, 0.5);
+@define-color sidebar_fg_color #f0f6fc;
 @define-color card_bg_color rgba(30, 35, 50, 0.5);
 @define-color card_fg_color #f0f6fc;
 @define-color dialog_bg_color rgba(22, 27, 34, 0.85);

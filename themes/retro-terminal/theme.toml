@@ -6,6 +6,6 @@ version = "1.0.0"
 style = "dark"
 
 [window]
-transparent = true
-opacity = 0.95
-blur = true
+transparent = false
+opacity = 1.0
+blur = false

@@ -3,9 +3,9 @@ id = "apple-mail"
 name = "Apple Mail (macOS Sequoia)"
 author = "Hylki Systems Architect"
 version = "1.0.0"
-style = "adaptive"
+style = "light"
 
 [window]
-transparent = true
-opacity = 0.92
-blur = true
+transparent = false
+opacity = 1.0
+blur = false

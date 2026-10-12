@@ -93,7 +93,14 @@ impl ThemeManager {
     pub fn parse_manifest(&self, dir: &Path) -> Result<ThemeManifest, Box<dyn std::error::Error>> {
         let manifest_path = dir.join("theme.toml");
         let content = fs::read_to_string(&manifest_path)?;
-        let manifest: ThemeManifest = toml::from_str(&content)?;
+        let mut manifest: ThemeManifest = toml::from_str(&content)?;
+        // Strict guardrail: Window transparency and blur are strictly isolated to glass-vibrancy.
+        // All other themes remain 100% opaque at the system window level, fair dinkum!
+        if manifest.theme.id != "glass-vibrancy" {
+            manifest.window.transparent = false;
+            manifest.window.blur = false;
+            manifest.window.opacity = 1.0;
+        }
         Ok(manifest)
     }
 }
@@ -102,7 +109,7 @@ thread_local! {
     /// Active custom GTK CSS provider at STYLE_PROVIDER_PRIORITY_USER
     static ACTIVE_PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
 
-    /// Saved backup provider for the 10-second safety rollback
+    /// Saved backup provider for the 20-second safety rollback
     static SAVED_PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
 
     /// Currently applied theme ID (None = Stock GNOME / Built-in theme)
@@ -123,7 +130,7 @@ thread_local! {
     /// Backup transparency flag for rollback
     static SAVED_TRANSPARENCY: RefCell<bool> = const { RefCell::new(false) };
 
-    /// Backup adw::ColorScheme for 10s rollback safety, fair dinkum!
+    /// Backup adw::ColorScheme for 20s rollback safety, fair dinkum!
     static SAVED_COLOR_SCHEME: RefCell<Option<adw::ColorScheme>> = const { RefCell::new(None) };
 
     /// Weak references to active WebKit UserContentManagers to update on theme switch
@@ -352,7 +359,7 @@ pub fn prepare_switch() {
 
 /// Rollback the GTK CSS provider, window transparency, and WebKit CSS to the saved state.
 pub fn rollback() {
-    info!("[theme_manager] 10-Second rollback triggered! Reverting UI state, mate.");
+    info!("[theme_manager] 20-Second rollback triggered! Reverting UI state, mate.");
     let display = gtk::gdk::Display::default();
 
     // 1. Revert GTK CSS Provider
@@ -450,20 +457,27 @@ pub fn apply_theme(target_id: Option<&str>) -> Result<(), Box<dyn std::error::Er
                 .find(|t| t.id == id || t.name == id)
                 .ok_or_else(|| format!("Custom theme '{}' not found in ~/.local/share/hylki/themes", id))?;
 
+            // CRITICAL GUARDRAIL: Strict State Isolation (No CSS Bleed)
+            // On theme activation, purge the existing provider from gdk::Display::default()
+            // prior to parsing and injecting the new CSS.
+            ACTIVE_PROVIDER.with(|cur| {
+                if let Some(old) = cur.borrow_mut().take() {
+                    gtk::style_context_remove_provider_for_display(&display, &old);
+                    debug!("[theme_manager] Purged existing CssProvider from display prior to loading new CSS, mate!");
+                }
+            });
+
             // 1. Load and inject gtk.css
             let gtk_css_path = theme.extracted_dir.join("gtk.css");
             if gtk_css_path.exists() {
                 let provider = gtk::CssProvider::new();
                 provider.load_from_path(&gtk_css_path);
+                gtk::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk::STYLE_PROVIDER_PRIORITY_USER,
+                );
                 ACTIVE_PROVIDER.with(|cur| {
-                    if let Some(old) = cur.borrow_mut().take() {
-                        gtk::style_context_remove_provider_for_display(&display, &old);
-                    }
-                    gtk::style_context_add_provider_for_display(
-                        &display,
-                        &provider,
-                        gtk::STYLE_PROVIDER_PRIORITY_USER,
-                    );
                     *cur.borrow_mut() = Some(provider);
                 });
                 debug!("[theme_manager] Injected gtk.css from {:?}", gtk_css_path);
@@ -471,15 +485,17 @@ pub fn apply_theme(target_id: Option<&str>) -> Result<(), Box<dyn std::error::Er
                 warn!("[theme_manager] Theme bundle does not contain gtk.css: {:?}", gtk_css_path);
             }
 
-            // 2. Handle window transparency capability
-            let transparent = theme.manifest.window.transparent;
+            // 2. Handle window transparency capability:
+            // Strictly isolated to "glass-vibrancy". All other themes remain 100% opaque at system window level.
+            let transparent = theme.id == "glass-vibrancy" && theme.manifest.window.transparent;
             MAIN_WINDOW.with(|w| {
                 if let Some(win) = w.borrow().as_ref() {
                     if transparent {
                         win.add_css_class("transparent-window");
-                        debug!("[theme_manager] Enabled .transparent-window class on main window.");
+                        debug!("[theme_manager] Enabled .transparent-window class on main window for glass-vibrancy.");
                     } else {
                         win.remove_css_class("transparent-window");
+                        debug!("[theme_manager] Enforced 100% opaque window for theme '{}', mate.", theme.id);
                     }
                 }
             });

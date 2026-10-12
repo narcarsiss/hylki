@@ -14,6 +14,8 @@
 @define-color view_fg_color #33ff77;
 @define-color headerbar_bg_color #040704;
 @define-color headerbar_fg_color #33ff77;
+@define-color sidebar_bg_color #040704;
+@define-color sidebar_fg_color #33ff77;
 @define-color card_bg_color #080f08;
 @define-color card_fg_color #33ff77;
 @define-color dialog_bg_color #050805;
@@ -138,11 +140,11 @@ row:selected label {
 
 /* 5. Buttons (Phosphor Terminal Pushers) */
 button {
-    background-color: #081008 !important;
+    border-radius: 0px !important;
+    background-color: transparent !important;
     background-image: none !important;
     color: #33ff77 !important;
     border: 1px solid #00bb4e !important;
-    border-radius: 0px !important;
     padding: 4px 12px !important;
     box-shadow: inset 0 0 4px rgba(0, 255, 102, 0.2) !important;
 }

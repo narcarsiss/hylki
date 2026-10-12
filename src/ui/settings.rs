@@ -1,13 +1,13 @@
-//! # HYLKI THEME SETTINGS UI & 10-SECOND SAFETY ROLLBACK
+//! # HYLKI THEME SETTINGS UI & 20-SECOND SAFETY ROLLBACK
 //!
 //! G'day mate! This module builds the GTK dropdown selector for external .theme bundles
-//! and enforces the non-negotiable 10-second safety rollback dialog.
-//! If the user doesn't confirm the new look within 10 seconds, she rolls right back to
+//! and enforces the non-negotiable 20-second safety rollback dialog.
+//! If the user doesn't confirm the new look within 20 seconds, she rolls right back to
 //! the previous style cleanly with zero fuss!
 //!
 //! STRICT DIRECTIVES ENFORCED:
 //! 1. Strictly selection UI only (NO drag-and-drop targets allowed).
-//! 2. Mandatory 10-second rollback with glib timer timeout.
+//! 2. Mandatory 20-second rollback with glib timer timeout.
 //! 3. CRITICAL UI CONSTRAINT: Non-modal dialog (`set_modal(false)`) so the main window
 //!    is NOT dimmed, blacked out, or obscured during theme evaluation.
 
@@ -81,11 +81,11 @@ pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
             return;
         }
 
-        // 3. Mandatory 10-Second Safety Rollback Confirmation Dialog
+        // 3. Mandatory 20-Second Safety Rollback Confirmation Dialog
         let dialog = adw::MessageDialog::new(
             parent_win_opt.as_ref(),
             Some(&i18n("Keep this theme?")),
-            Some(&i18n("Reverting to previous theme in 10 seconds...")),
+            Some(&i18n("Reverting to previous theme in 20 seconds...")),
         );
 
         // CRITICAL UI CONSTRAINT: Explicitly set popup to be non-modal (set_modal(false))
@@ -100,7 +100,7 @@ pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
         dialog.set_default_response(Some("keep"));
         dialog.set_close_response("revert");
 
-        let timer_seconds = Rc::new(RefCell::new(10));
+        let timer_seconds = Rc::new(RefCell::new(20));
         let dialog_closed = Rc::new(RefCell::new(false));
 
         // Ticking countdown timer
@@ -157,7 +157,7 @@ pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
     dropdown
 }
 
-/// Temporary toggle / cycler to quickly view and cycle through themes with the 10s rollback safety dialog.
+/// Temporary toggle / cycler to quickly view and cycle through themes with the 20s rollback safety dialog.
 /// She's a ripper for rapid testing across Retro Terminal, Outlook 365, Apple Mail, and Glass Vibrancy!
 pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
     let themes = theme_manager::discover_themes();
@@ -194,7 +194,7 @@ pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
     let dialog = adw::MessageDialog::new(
         parent_win,
         Some(&format!("Keep theme '{}'?", target_name)),
-        Some(&i18n("Reverting to previous theme in 10 seconds...")),
+        Some(&i18n("Reverting to previous theme in 20 seconds...")),
     );
 
     // CRITICAL UI CONSTRAINT: Explicitly non-modal to keep the background bright and clear, she'll be right!
@@ -207,7 +207,7 @@ pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
     dialog.set_default_response(Some("keep"));
     dialog.set_close_response("revert");
 
-    let timer_seconds = Rc::new(RefCell::new(10));
+    let timer_seconds = Rc::new(RefCell::new(20));
     let dialog_closed = Rc::new(RefCell::new(false));
 
     let timer_dialog = dialog.clone();
