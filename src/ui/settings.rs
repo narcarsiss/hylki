@@ -22,6 +22,11 @@ use gtk::glib;
 
 use crate::theme_manager::{self, ThemeInfo};
 
+thread_local! {
+    static ACTIVE_DROPDOWN_SYNC: RefCell<Option<Rc<dyn Fn(Option<&str>)>>> = const { RefCell::new(None) };
+    static ACTIVE_ROLLBACK_SESSION: RefCell<Option<(adw::MessageDialog, Rc<RefCell<bool>>)>> = const { RefCell::new(None) };
+}
+
 /// Builds the custom .theme selector dropdown with safety rollback confirmation.
 /// Strictly NO drag & drop — dropdown selection only as mandated by directives, mate!
 pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
@@ -165,14 +170,48 @@ pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
         dialog.present();
     });
 
+    let dd_clone_sync = dropdown.clone();
+    let theme_ids_rc_sync = theme_ids_rc.clone();
+    let confirmed_index_sync = confirmed_index.clone();
+    let is_reverting_sync = is_reverting.clone();
+    let sync_cb: Rc<dyn Fn(Option<&str>)> = Rc::new(move |target_id: Option<&str>| {
+        let idx = theme_ids_rc_sync
+            .iter()
+            .position(|id_opt| id_opt.as_deref() == target_id)
+            .unwrap_or(0);
+        *is_reverting_sync.borrow_mut() = true;
+        dd_clone_sync.set_selected(idx as u32);
+        *confirmed_index_sync.borrow_mut() = idx as u32;
+        *is_reverting_sync.borrow_mut() = false;
+    });
+    ACTIVE_DROPDOWN_SYNC.with(|slot| *slot.borrow_mut() = Some(sync_cb));
+
     dropdown
 }
 
 /// Temporary toggle / cycler to quickly view and cycle through themes with the 20s rollback safety dialog.
 /// She's a ripper for rapid testing across Retro Terminal, Outlook 365, Apple Mail, and Glass Vibrancy!
 pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
-    let themes = theme_manager::discover_themes();
+    // Dismiss any active in-flight rollback session to prevent timer cross-talk, mate!
+    ACTIVE_ROLLBACK_SESSION.with(|session| {
+        if let Some((prev_dlg, closed_flag)) = session.borrow_mut().take() {
+            *closed_flag.borrow_mut() = true;
+            prev_dlg.destroy();
+        }
+    });
+
+    let mut themes = theme_manager::discover_themes();
     let current_id = theme_manager::active_theme_id();
+
+    // Canonical order for test cycling across the 4 newly defined themes:
+    // Retro Terminal -> Glass Vibrancy -> Apple Mail -> Outlook 365
+    let target_order = ["retro-terminal", "glass-vibrancy", "apple-mail", "outlook-365"];
+    themes.sort_by_key(|t| {
+        target_order
+            .iter()
+            .position(|&id| id == t.id)
+            .unwrap_or(usize::MAX)
+    });
 
     // Cycle sequence: Default (None) -> themes[0] -> themes[1] ... -> Default (None)
     let next_theme_id = match current_id {
@@ -221,6 +260,11 @@ pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
     let timer_seconds = Rc::new(RefCell::new(20));
     let dialog_closed = Rc::new(RefCell::new(false));
 
+    // Register active rollback session
+    ACTIVE_ROLLBACK_SESSION.with(|session| {
+        *session.borrow_mut() = Some((dialog.clone(), dialog_closed.clone()));
+    });
+
     // Mandatory 20-second safety rollback timer, she'll be right!
     let cycle_rollback_dialog = dialog.clone();
     let cycle_rollback_closed = dialog_closed.clone();
@@ -254,17 +298,54 @@ pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
     });
 
     let dialog_closed_clone = dialog_closed.clone();
+    let next_theme_id_clone = next_theme_id.clone();
     dialog.connect_response(move |d, response| {
         *dialog_closed_clone.borrow_mut() = true;
+        ACTIVE_ROLLBACK_SESSION.with(|session| {
+            *session.borrow_mut() = None;
+        });
+
         if response == "keep" {
             theme_manager::commit();
-            tracing::info!("[settings] User confirmed cycled theme. Good on ya, mate!");
+            ACTIVE_DROPDOWN_SYNC.with(|slot| {
+                if let Some(cb) = slot.borrow().as_ref() {
+                    cb(next_theme_id_clone.as_deref());
+                }
+            });
+            tracing::info!("[settings] User confirmed cycled theme '{}'. Good on ya, mate!", target_name);
         } else {
             theme_manager::rollback();
+            let restored_id = theme_manager::active_theme_id();
+            ACTIVE_DROPDOWN_SYNC.with(|slot| {
+                if let Some(cb) = slot.borrow().as_ref() {
+                    cb(restored_id.as_deref());
+                }
+            });
             tracing::info!("[settings] Cycled theme rollback executed. Back to safety!");
         }
         d.destroy();
     });
 
     dialog.present();
+}
+
+/// Primary Temp Toggle endpoint: cycles cleanly through the updated themes.
+/// She's fair dinkum, mate! Ensures anyone invoking temp_toggle executes the verified
+/// non-modal, 20-second rollback cycle across all new theme profiles.
+pub fn temp_toggle(parent_win: Option<&gtk::Window>) {
+    cycle_next_theme(parent_win);
+}
+
+/// Builds a dedicated Temp Toggle button widget that can be plugged into UI bars.
+/// She's a ripper for rapid testing across Retro Terminal, Outlook 365, Apple Mail, and Glass Vibrancy!
+pub fn build_temp_toggle(parent_win: Option<&gtk::Window>) -> gtk::Button {
+    let btn = gtk::Button::builder()
+        .icon_name("media-playlist-repeat-symbolic")
+        .tooltip_text(&i18n("Temporary Theme Toggle (20s rollback preview)"))
+        .build();
+    let win = parent_win.cloned();
+    btn.connect_clicked(move |_| {
+        cycle_next_theme(win.as_ref());
+    });
+    btn
 }

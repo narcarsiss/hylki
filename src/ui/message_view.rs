@@ -3701,7 +3701,17 @@ impl MessageView {
     /// system's when it follows the system.
     fn theme_dark(&self) -> bool {
         self.content_dark
-            .unwrap_or_else(|| adw::StyleManager::default().is_dark())
+            .unwrap_or_else(|| {
+                // Fair dinkum! Check the active custom theme to align the temp flip switch
+                if let Some(id) = crate::theme_manager::active_theme_id() {
+                    match id.as_str() {
+                        "retro-terminal" | "glass-vibrancy" => return true,
+                        "apple-mail" | "outlook-365" => return false,
+                        _ => {}
+                    }
+                }
+                adw::StyleManager::default().is_dark()
+            })
     }
 
     /// Whether the message on screen is drawn dark: the scheme the user

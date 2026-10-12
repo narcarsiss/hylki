@@ -418,6 +418,12 @@ pub fn rollback() {
             info!("[theme_manager] Reverted adw::StyleManager color scheme to {:?}, mate.", scheme);
         }
     });
+
+    // Clear saved states after clean rollback, fair dinkum!
+    SAVED_PROVIDER.with(|p| *p.borrow_mut() = None);
+    SAVED_THEME_ID.with(|t| *t.borrow_mut() = None);
+    SAVED_READER_CSS.with(|r| *r.borrow_mut() = None);
+    SAVED_COLOR_SCHEME.with(|cs| *cs.borrow_mut() = None);
 }
 
 /// User confirmed the theme: commit and discard backup.
