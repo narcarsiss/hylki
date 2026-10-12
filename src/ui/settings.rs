@@ -14,6 +14,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use gtk::prelude::*;
 use adw::prelude::*;
 use gettextrs::gettext as i18n;
 use gtk::glib;
