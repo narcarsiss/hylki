@@ -1,0 +1,176 @@
+/* ==========================================================================
+   HYLKI RETRO TERMINAL (CRT) THEME
+   Engineered with authentic phosphor glow, monospace layouts, scanlines,
+   and zero-radius angular terminal framing. She's a ripper!
+   ========================================================================== */
+
+@define-color accent_color #00ff66;
+@define-color accent_bg_color #00ff66;
+@define-color accent_fg_color #000000;
+@define-color window_bg_color #080d09;
+@define-color window_fg_color #33ff77;
+@define-color view_bg_color #0a110c;
+@define-color view_fg_color #33ff77;
+@define-color headerbar_bg_color #050805;
+@define-color headerbar_fg_color #00ff66;
+@define-color card_bg_color #0e1710;
+@define-color card_fg_color #33ff77;
+@define-color dialog_bg_color #0c140e;
+@define-color dialog_fg_color #33ff77;
+@define-color popover_bg_color #0c140e;
+@define-color popover_fg_color #33ff77;
+@define-color shade_color rgba(0, 255, 102, 0.15);
+@define-color scrollbar_outline_color rgba(0, 255, 102, 0.3);
+
+* {
+    font-family: 'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace;
+    letter-spacing: 0.03em;
+    -gtk-secondary-caret-color: #00ff66;
+}
+
+/* Scanline and phosphor background simulation */
+window,
+.background {
+    background-color: #080d09;
+    color: #33ff77;
+    background-image: repeating-linear-gradient(
+        0deg,
+        rgba(0, 0, 0, 0.22) 0px,
+        rgba(0, 0, 0, 0.22) 1px,
+        transparent 1px,
+        transparent 2px
+    );
+}
+
+/* Translucent terminal window when capability requested */
+window.transparent-window,
+window.transparent-window .background {
+    background-color: rgba(8, 13, 9, 0.94);
+}
+
+/* Header bar and navigation */
+headerbar {
+    background-color: #050805;
+    color: #00ff66;
+    border-bottom: 2px solid #00bb4e;
+    box-shadow: inset 0 -1px 4px rgba(0, 255, 102, 0.2);
+}
+
+headerbar .title {
+    color: #00ff66;
+    font-weight: 700;
+    text-shadow: 0 0 4px rgba(0, 255, 102, 0.7);
+}
+
+/* Sharp box geometry - zero pill curves in a VT100 terminal! */
+button,
+entry,
+popover,
+dialog,
+.card,
+row,
+scrolledwindow {
+    border-radius: 0px !important;
+}
+
+/* Push buttons styled as mechanical terminal keys */
+button {
+    background-color: #0d1710;
+    color: #00ff66;
+    border: 1px solid #00bb4e;
+    padding: 6px 14px;
+    box-shadow: inset 0 0 2px rgba(0, 255, 102, 0.25);
+    transition: all 120ms ease-in-out;
+}
+
+button:hover {
+    background-color: #00bb4e;
+    color: #000000;
+    box-shadow: 0 0 8px rgba(0, 255, 102, 0.8);
+}
+
+button:active {
+    background-color: #00ff66;
+    color: #000000;
+}
+
+button.suggested-action {
+    background-color: #009940;
+    color: #000000;
+    font-weight: bold;
+    border: 1px solid #00ff66;
+}
+
+button.destructive-action {
+    background-color: #2b0000;
+    color: #ff3333;
+    border: 1px solid #ff3333;
+}
+
+button.destructive-action:hover {
+    background-color: #ff3333;
+    color: #000000;
+}
+
+/* Input entries */
+entry {
+    background-color: #040705;
+    color: #00ff66;
+    border: 1px solid #00bb4e;
+    padding: 6px 10px;
+    box-shadow: inset 0 0 6px rgba(0, 255, 102, 0.2);
+}
+
+entry:focus {
+    border-color: #00ff66;
+    box-shadow: 0 0 6px rgba(0, 255, 102, 0.7);
+}
+
+/* List views & mail item rows */
+listview,
+list {
+    background-color: transparent;
+    color: #33ff77;
+}
+
+row {
+    border-bottom: 1px solid rgba(0, 187, 78, 0.2);
+    padding: 8px 12px;
+}
+
+row:hover {
+    background-color: rgba(0, 255, 102, 0.12);
+}
+
+/* Inverse video active selection */
+row:selected {
+    background-color: #00ff66 !important;
+    color: #000000 !important;
+    font-weight: bold;
+}
+
+row:selected label {
+    color: #000000 !important;
+}
+
+/* Unread indicators and dots */
+.unread-indicator,
+.unread-dot {
+    background-color: #00ff66;
+    box-shadow: 0 0 6px #00ff66;
+    border-radius: 0px !important;
+}
+
+/* Scrollbars */
+scrollbar slider {
+    background-color: rgba(0, 255, 102, 0.35);
+    border: 1px solid #00bb4e;
+    border-radius: 0px !important;
+    min-width: 6px;
+    min-height: 6px;
+}
+
+scrollbar slider:hover {
+    background-color: #00ff66;
+    box-shadow: 0 0 6px rgba(0, 255, 102, 0.8);
+}

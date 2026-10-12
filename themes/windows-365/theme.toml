@@ -1,0 +1,11 @@
+[theme]
+id = "windows-365"
+name = "Windows 365"
+author = "Hylki Systems Architect"
+version = "1.0.0"
+style = "light"
+
+[window]
+transparent = false
+opacity = 1.0
+blur = false

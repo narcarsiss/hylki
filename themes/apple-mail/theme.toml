@@ -1,0 +1,11 @@
+[theme]
+id = "apple-mail"
+name = "Apple Mail"
+author = "Hylki Systems Architect"
+version = "1.0.0"
+style = "adaptive"
+
+[window]
+transparent = true
+opacity = 0.90
+blur = true

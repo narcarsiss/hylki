@@ -44,6 +44,7 @@ mod startup;
 mod text_scale;
 mod theme;
 mod theme_palettes;
+pub mod theme_manager;
 mod translate;
 mod sensitivity;
 mod tray;

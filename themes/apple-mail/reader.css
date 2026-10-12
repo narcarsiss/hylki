@@ -1,0 +1,61 @@
+/* ==========================================================================
+   HYLKI APPLE MAIL - WEBKIT EMAIL BODY READER
+   Matches macOS Apple Mail clean layout and SF Pro system typography.
+   ========================================================================== */
+
+body, html {
+    background-color: #ffffff !important;
+    color: #1d1d1f !important;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif !important;
+    font-size: 15px !important;
+    line-height: 1.65 !important;
+    -webkit-font-smoothing: antialiased !important;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    color: #1d1d1f !important;
+    font-weight: 600 !important;
+    letter-spacing: -0.015em !important;
+}
+
+a {
+    color: #007aff !important;
+    text-decoration: underline !important;
+}
+
+blockquote {
+    border-left: 3px solid #007aff !important;
+    margin: 16px 0 !important;
+    padding-left: 14px !important;
+    color: #6e6e73 !important;
+}
+
+pre, code {
+    font-family: 'SF Mono', Menlo, Monaco, monospace !important;
+    background-color: #f5f5f7 !important;
+    color: #1d1d1f !important;
+    border-radius: 4px !important;
+    padding: 2px 6px !important;
+}
+
+table {
+    border-collapse: collapse !important;
+    width: 100% !important;
+    margin: 14px 0 !important;
+}
+
+th, td {
+    border: 1px solid #d2d2d7 !important;
+    padding: 8px 12px !important;
+}
+
+th {
+    background-color: #f5f5f7 !important;
+    font-weight: 600 !important;
+}
+
+hr {
+    border: none !important;
+    border-top: 1px solid #d2d2d7 !important;
+    margin: 24px 0 !important;
+}

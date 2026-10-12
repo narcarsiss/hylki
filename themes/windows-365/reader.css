@@ -1,0 +1,72 @@
+/* ==========================================================================
+   HYLKI WINDOWS 365 (MICROSOFT FLUENT) - WEBKIT EMAIL BODY READER
+   Matches Microsoft Outlook / 365 typography and card formatting.
+   ========================================================================== */
+
+body, html {
+    background-color: #ffffff !important;
+    color: #201f1e !important;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif !important;
+    font-size: 14px !important;
+    line-height: 1.6 !important;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    color: #201f1e !important;
+    font-weight: 600 !important;
+    margin-top: 18px !important;
+    margin-bottom: 8px !important;
+}
+
+h1 { font-size: 20px !important; }
+h2 { font-size: 17px !important; }
+h3 { font-size: 15px !important; }
+
+a {
+    color: #0078d4 !important;
+    text-decoration: none !important;
+}
+
+a:hover {
+    color: #106ebe !important;
+    text-decoration: underline !important;
+}
+
+blockquote {
+    border-left: 3px solid #0078d4 !important;
+    margin: 14px 0 !important;
+    padding-left: 14px !important;
+    color: #605e5c !important;
+}
+
+pre, code {
+    font-family: Consolas, 'Courier New', monospace !important;
+    background-color: #f3f2f1 !important;
+    color: #201f1e !important;
+    border: 1px solid #e1dfdd !important;
+    padding: 2px 6px !important;
+    border-radius: 3px !important;
+}
+
+table {
+    border-collapse: collapse !important;
+    width: 100% !important;
+    margin: 12px 0 !important;
+}
+
+th, td {
+    border: 1px solid #edebe9 !important;
+    padding: 8px 12px !important;
+    text-align: left !important;
+}
+
+th {
+    background-color: #f3f2f1 !important;
+    font-weight: 600 !important;
+}
+
+hr {
+    border: none !important;
+    border-top: 1px solid #edebe9 !important;
+    margin: 24px 0 !important;
+}

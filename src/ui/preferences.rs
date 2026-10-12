@@ -2284,6 +2284,12 @@ impl Component for Preferences {
                                         set_focusable: false,
                                     },
 
+                                    #[name = "custom_theme_row"]
+                                    adw::ActionRow {
+                                        set_title: &i18n("Custom Theme (.theme)"),
+                                        set_subtitle: &i18n("External UI/UX themes from ~/.local/share/hylki/themes/"),
+                                    },
+
                                     // The app-icon gallery; its content is built in init
                                     // (a grid of textures the view! macro can't declare).
                                     #[name = "app_icon_row"]
@@ -4302,6 +4308,11 @@ impl Component for Preferences {
             gallery.set_margin_top(10);
             body.append(&gallery);
             widgets.theme_row.set_child(Some(&body));
+        }
+        {
+            let host_win = root.root().and_downcast::<gtk::Window>();
+            let custom_dd = crate::ui::settings::build_theme_dropdown(host_win.as_ref());
+            widgets.custom_theme_row.add_suffix(&custom_dd);
         }
 
         // App icon: title in the row's own voice, the gallery beneath.

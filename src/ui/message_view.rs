@@ -5184,6 +5184,7 @@ fn build_webview(role: &'static str) -> webkit6::WebView {
     // document notify us (e.g. a double-clicked conversation header).
     let ucm = webkit6::UserContentManager::new();
     ucm.register_script_message_handler("hylki", None);
+    crate::theme_manager::inject_reader_css(&ucm);
     let webview = webkit6::WebView::builder()
         .web_context(&shared_web_context())
         .user_content_manager(&ucm)

@@ -1,0 +1,177 @@
+/* ==========================================================================
+   HYLKI APPLE MAIL (MACOS SEQUOIA) THEME
+   Engineered with macOS Sonoma/Sequoia frosted translucency, smooth 10px curves,
+   vibrant Cupertino blue accents (#007aff), and refined typography.
+   ========================================================================== */
+
+@define-color accent_color #007aff;
+@define-color accent_bg_color #007aff;
+@define-color accent_fg_color #ffffff;
+@define-color window_bg_color #f6f6f6;
+@define-color window_fg_color #1d1d1f;
+@define-color view_bg_color #ffffff;
+@define-color view_fg_color #1d1d1f;
+@define-color headerbar_bg_color rgba(246, 246, 246, 0.85);
+@define-color headerbar_fg_color #1d1d1f;
+@define-color card_bg_color #ffffff;
+@define-color card_fg_color #1d1d1f;
+@define-color dialog_bg_color #f6f6f6;
+@define-color dialog_fg_color #1d1d1f;
+@define-color popover_bg_color rgba(255, 255, 255, 0.95);
+@define-color popover_fg_color #1d1d1f;
+@define-color shade_color rgba(0, 0, 0, 0.05);
+@define-color scrollbar_outline_color transparent;
+
+* {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', system-ui, sans-serif;
+    letter-spacing: -0.01em;
+    -gtk-secondary-caret-color: #007aff;
+}
+
+/* Translucent macOS frosted glass canvas */
+window,
+.background {
+    background-color: #f6f6f6;
+    color: #1d1d1f;
+}
+
+window.transparent-window,
+window.transparent-window .background {
+    background-color: rgba(246, 246, 246, 0.90);
+}
+
+/* macOS Unified Header Toolbar */
+headerbar {
+    background-color: rgba(246, 246, 246, 0.88);
+    color: #1d1d1f;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.12);
+    box-shadow: none;
+    padding: 6px 12px;
+}
+
+headerbar .title {
+    font-weight: 600;
+    font-size: 13px;
+    color: #1d1d1f;
+}
+
+/* Rounded macOS geometry */
+button,
+entry,
+popover,
+dialog,
+.card {
+    border-radius: 8px;
+}
+
+/* Apple Mail smooth buttons */
+button {
+    background-color: #ffffff;
+    color: #1d1d1f;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    padding: 5px 12px;
+    font-weight: 500;
+    transition: all 120ms ease;
+}
+
+button:hover {
+    background-color: #f0f0f0;
+}
+
+button:active {
+    background-color: #e5e5e5;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+button.suggested-action {
+    background-color: #007aff;
+    color: #ffffff;
+    border: 1px solid #0062cc;
+    box-shadow: 0 1px 2px rgba(0, 122, 255, 0.25);
+}
+
+button.suggested-action:hover {
+    background-color: #0069d9;
+}
+
+button.destructive-action {
+    background-color: #ff3b30;
+    color: #ffffff;
+    border: 1px solid #d70015;
+}
+
+/* macOS Capsule/Pill Search Entry */
+entry {
+    background-color: rgba(0, 0, 0, 0.05);
+    color: #1d1d1f;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 5px 12px;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+entry:focus {
+    background-color: #ffffff;
+    border-color: #007aff;
+    box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.25);
+}
+
+/* Mail message rows */
+listview,
+list {
+    background-color: #ffffff;
+}
+
+row {
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    padding: 10px 14px;
+    margin: 2px 6px;
+    border-radius: 8px;
+}
+
+row:hover {
+    background-color: rgba(0, 0, 0, 0.03);
+}
+
+/* Vibrant Cupertino Pill Selection */
+row:selected {
+    background-color: #007aff !important;
+    color: #ffffff !important;
+}
+
+row:selected label {
+    color: #ffffff !important;
+}
+
+/* Unread dot */
+.unread-indicator,
+.unread-dot {
+    background-color: #007aff;
+    border-radius: 9999px;
+    min-width: 8px;
+    min-height: 8px;
+}
+
+/* Sidebar translucent styling */
+.sidebar,
+stacksidebar {
+    background-color: rgba(240, 240, 242, 0.7);
+    border-right: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* Elegant macOS overlay scrollbar */
+scrollbar {
+    background-color: transparent;
+}
+
+scrollbar slider {
+    background-color: rgba(0, 0, 0, 0.25);
+    border-radius: 10px;
+    min-width: 6px;
+    min-height: 6px;
+}
+
+scrollbar slider:hover {
+    background-color: rgba(0, 0, 0, 0.4);
+}

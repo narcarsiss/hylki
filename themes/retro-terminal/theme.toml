@@ -1,0 +1,11 @@
+[theme]
+id = "retro-terminal"
+name = "Retro Terminal (CRT)"
+author = "Hylki Systems Architect"
+version = "1.0.0"
+style = "dark"
+
+[window]
+transparent = true
+opacity = 0.94
+blur = true

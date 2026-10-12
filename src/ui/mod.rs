@@ -29,6 +29,7 @@ pub mod message_window;
 pub mod notifications;
 pub mod pgp_keys;
 pub mod preferences;
+pub mod settings;
 pub mod print_preview;
 pub mod rich_editor;
 pub mod sidebar;

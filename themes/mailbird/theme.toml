@@ -1,0 +1,11 @@
+[theme]
+id = "mailbird"
+name = "Mailbird Sleek"
+author = "Hylki Systems Architect"
+version = "1.0.0"
+style = "dark"
+
+[window]
+transparent = false
+opacity = 1.0
+blur = false
