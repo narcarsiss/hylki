@@ -4312,7 +4312,9 @@ impl Component for Preferences {
         {
             let host_win = root.root().and_downcast::<gtk::Window>();
             let custom_dd = crate::ui::settings::build_theme_dropdown(host_win.as_ref());
+            let temp_toggle_btn = crate::ui::settings::build_temp_toggle(host_win.as_ref());
             widgets.custom_theme_row.add_suffix(&custom_dd);
+            widgets.custom_theme_row.add_suffix(&temp_toggle_btn);
         }
 
         // App icon: title in the row's own voice, the gallery beneath.

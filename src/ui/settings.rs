@@ -131,7 +131,7 @@ pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
             let mut secs = timer_secs.borrow_mut();
             if *secs > 1 {
                 *secs -= 1;
-                let body_text = format!("Reverting to previous theme in {} seconds...", *secs);
+                let body_text = format!("Keep this theme? Reverting in {}s...", *secs);
                 timer_dialog.set_body(&body_text);
                 glib::ControlFlow::Continue
             } else {
@@ -189,7 +189,7 @@ pub fn build_theme_dropdown(parent_win: Option<&gtk::Window>) -> gtk::DropDown {
 }
 
 /// Temporary toggle / cycler to quickly view and cycle through themes with the 20s rollback safety dialog.
-/// She's a ripper for rapid testing across Untry Lightweight, Apple Mail, Outlook 365, Retro Terminal, and Glass!
+/// She's a ripper for rapid testing across Untry Lightweight, Apple Mail (Tahoe "Liquid Glass"), Outlook 365 (New Look "Fluent Core"), Retro Terminal (Green Phosphor CRT), and Glass (Faraday Style)!
 pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
     // Dismiss any active in-flight rollback session to prevent timer cross-talk, mate!
     ACTIVE_ROLLBACK_SESSION.with(|session| {
@@ -203,7 +203,7 @@ pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
     let current_id = theme_manager::active_theme_id();
 
     // Canonical order for test cycling across the 5 newly defined themes, mate:
-    // Untry Lightweight -> Apple Mail -> Outlook 365 -> Retro Terminal -> Glass Vibrancy
+    // Untry Lightweight -> Apple Mail (Tahoe "Liquid Glass") -> Outlook 365 (New Look "Fluent Core") -> Retro Terminal (Green Phosphor CRT) -> Glass (Faraday Style)
     let target_order = [
         "untry-lightweight",
         "apple-mail",
@@ -249,7 +249,7 @@ pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
     let dialog = adw::MessageDialog::new(
         parent_win,
         Some(&format!("Keep theme '{}'?", target_name)),
-        Some(&i18n("Reverting to previous theme in 20 seconds...")),
+        Some(&i18n("Keep this theme? Reverting in 20s...")),
     );
 
     // CRITICAL UI CONSTRAINT: Explicitly non-modal to keep the background bright and clear, she'll be right!
@@ -292,7 +292,7 @@ pub fn cycle_next_theme(parent_win: Option<&gtk::Window>) {
         let mut secs = timer_secs.borrow_mut();
         if *secs > 1 {
             *secs -= 1;
-            let body_text = format!("Reverting to previous theme in {} seconds...", *secs);
+            let body_text = format!("Keep this theme? Reverting in {}s...", *secs);
             timer_dialog.set_body(&body_text);
             glib::ControlFlow::Continue
         } else {
@@ -342,7 +342,7 @@ pub fn temp_toggle(parent_win: Option<&gtk::Window>) {
 }
 
 /// Builds a dedicated Temp Toggle button widget that can be plugged into UI bars.
-/// She's a ripper for rapid testing across Untry Lightweight, Apple Mail, Outlook 365, Retro Terminal, and Glass!
+/// She's a ripper for rapid testing across Untry Lightweight, Apple Mail (Tahoe "Liquid Glass"), Outlook 365 (New Look "Fluent Core"), Retro Terminal (Green Phosphor CRT), and Glass (Faraday Style)!
 pub fn build_temp_toggle(parent_win: Option<&gtk::Window>) -> gtk::Button {
     let btn = gtk::Button::builder()
         .icon_name("media-playlist-repeat-symbolic")
