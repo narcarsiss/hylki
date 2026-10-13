@@ -24,7 +24,6 @@ gtk = { package = "gtk4", version = "0.9", features = ["v4_14"] }
 # AdwStyleManager:accent-color, which the System theme swatch reads.
 # libadwaita 1.7 is a 2025 release; the GNOME 50 runtime has 1.9.
 adw = { package = "libadwaita", version = "0.7", features = ["v1_7"] }
-libadwaita = { package = "libadwaita", version = "0.7", features = ["v1_7"] }
 relm4 = { version = "0.9", features = ["macros", "libadwaita"] }
 relm4-components = "0.9"
 # v2_44 for WebKitEditorState::changed: the composer's undo (#200) has to know
