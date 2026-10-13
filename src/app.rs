@@ -23458,20 +23458,7 @@ fn save_attachment(att: Attachment, parent: Option<adw::ApplicationWindow>) {
     });
 }
 
-fn save_all_attachments(atts: Vec<Attachment>, parent: Option<adw::ApplicationWindow>) {
-    let dialog = gtk::FileDialog::new();
-    dialog.set_title(&i18n("Save All Attachments"));
-    dialog.select_folder(parent.as_ref(), gtk::gio::Cancellable::NONE, move |res| {
-        if let Ok(folder) = res {
-            if let Some(dir) = folder.path() {
-                for att in &atts {
-                    let safe = att.name.replace(['/', '\\'], "_");
-                    let _ = std::fs::write(dir.join(&safe), &att.data);
-                }
-            }
-        }
-    });
-}
+// Dead code save_all_attachments purged, fair dinkum mate!
 
 /// Set while the welcome wizard is open. Its blue ground is designed for the
 /// light scheme only, and libadwaita has no per-window scheme, so the whole

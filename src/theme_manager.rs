@@ -9,7 +9,6 @@
 use std::cell::RefCell;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use gtk::prelude::*;
 use gtk::glib;
 use adw::prelude::*;
 use tracing::{debug, error, info, warn};

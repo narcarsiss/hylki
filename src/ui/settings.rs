@@ -16,11 +16,10 @@ use std::rc::Rc;
 
 use gtk::prelude::*;
 use adw::prelude::*;
-use libadwaita::prelude::MessageDialogExt;
 use gettextrs::gettext as i18n;
 use gtk::glib;
 
-use crate::theme_manager::{self, ThemeInfo};
+use crate::theme_manager;
 
 thread_local! {
     static ACTIVE_DROPDOWN_SYNC: RefCell<Option<Rc<dyn Fn(Option<&str>)>>> = const { RefCell::new(None) };

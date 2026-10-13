@@ -5666,10 +5666,13 @@ async fn sel(session: &mut ImapSession, path: &str) -> Result<async_imap::types:
 }
 
 async fn exam(session: &mut ImapSession, path: &str) -> Result<async_imap::types::Mailbox, async_imap::error::Error> {
+    let t0 = std::time::Instant::now();
     let cmd = format!("EXAMINE {}", quote_mailbox(path));
     wire(&cmd);
     session.as_mut().set_selected_folder(None);
     let r = session.examine(path).await;
+    let delta = t0.elapsed();
+    tracing::info!(target: "hylki::imap", "[profiling] EXAMINE delta={:?} mailbox='{}'", delta, path);
     if r.is_ok() {
         session.as_mut().set_selected_folder(Some(path));
     }
@@ -5693,10 +5696,13 @@ async fn fetch_uids<'a, S1: AsRef<str>, S2: AsRef<str>>(
     set: S1,
     items: S2,
 ) -> Result<impl futures::Stream<Item = Result<Fetch, async_imap::error::Error>> + 'a + Send + Unpin, async_imap::error::Error> {
-    let (set, items) = (set.as_ref().to_string(), items.as_ref().to_string());
-    let cmd = format!("UID FETCH {set} {items}");
+    let t0 = std::time::Instant::now();
+    let (set_str, items_str) = (set.as_ref().to_string(), items.as_ref().to_string());
+    let cmd = format!("UID FETCH {set_str} {items_str}");
     wire(&cmd);
     let r = session.uid_fetch(set, items).await;
+    let delta = t0.elapsed();
+    tracing::info!(target: "hylki::imap", "[profiling] UID FETCH delta={:?} set='{}' items='{}'", delta, set_str, items_str);
     wired(&cmd, &r);
     r
 }
@@ -5753,9 +5759,13 @@ async fn expunge_all<'a>(
 }
 
 async fn search_uids<S: AsRef<str>>(session: &mut ImapSession, query: S) -> Result<std::collections::HashSet<u32>, async_imap::error::Error> {
-    let cmd = format!("UID SEARCH {}", query.as_ref());
+    let t0 = std::time::Instant::now();
+    let query_str = query.as_ref().to_string();
+    let cmd = format!("UID SEARCH {query_str}");
     wire(&cmd);
     let r = session.uid_search(query.as_ref()).await;
+    let delta = t0.elapsed();
+    tracing::info!(target: "hylki::imap", "[profiling] UID SEARCH delta={:?} query='{}'", delta, query_str);
     wired(&cmd, &r);
     r
 }
@@ -7487,12 +7497,15 @@ async fn logged_fetch(
     range: &str,
     query: &str,
 ) -> Result<Vec<Fetch>, async_imap::error::Error> {
+    let t0 = std::time::Instant::now();
     let cmd = format!("FETCH {range} {query}");
     wire(&cmd);
     let r: Result<Vec<Fetch>, async_imap::error::Error> = async {
         session.fetch(range, query).await?.try_collect().await
     }
     .await;
+    let delta = t0.elapsed();
+    tracing::info!(target: "hylki::imap", "[profiling] FETCH (UID ENVELOPE FLAGS...) delta={:?} range='{}' query='{}'", delta, range, query);
     wired(&cmd, &r);
     r
 }

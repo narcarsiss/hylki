@@ -940,6 +940,7 @@ impl Cache {
     }
 
     pub fn load_messages(&self, account_id: u32, folder_path: &str, folder_id: u32) -> Vec<Message> {
+        let t0 = std::time::Instant::now();
         let run = || -> rusqlite::Result<Vec<Message>> {
             let mut stmt = self.conn.prepare(&format!(
                 "SELECT uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment, recipients, cc, message_id, references_, preview, reply_to, {KEYWORDS_COL}, importance, due, gmail_labels
@@ -995,6 +996,7 @@ impl Cache {
                 }
             }
         }
+        tracing::info!(target: "hylki::cache", "[profiling] SQLite load_messages delta={:?} count={} account_id={} folder_path={}", t0.elapsed(), messages.len(), account_id, folder_path);
         messages
     }
 

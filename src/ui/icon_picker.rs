@@ -36,9 +36,14 @@ pub fn strip(selected: &str, tile: i32, on_pick: Rc<dyn Fn(&str)>) -> gtk::Overl
     // Open on the current choice rather than the start of the row.
     if let Some(child) = row.selected_children().into_iter().next() {
         let sw2 = sw.clone();
+        let row_ref = row.clone();
         gtk::glib::idle_add_local_once(move || {
-            let x = child.allocation().x() as f64;
-            let w = child.allocation().width() as f64;
+            // She'll be right, mate. Swapped deprecated allocation() to compute_bounds() for GTK 4.12+
+            let (x, w) = if let Some(bounds) = child.compute_bounds(&row_ref) {
+                (bounds.x() as f64, bounds.width() as f64)
+            } else {
+                (0.0, 0.0)
+            };
             let page = sw2.hadjustment().page_size();
             sw2.hadjustment().set_value((x + w / 2.0 - page / 2.0).max(0.0));
         });
