@@ -25,6 +25,9 @@ pub struct Suggestion {
     pub email: String,
     /// True when this came from the address book.
     pub from_contacts: bool,
+    /// Found in an LDAP or organisation directory: marked as such even when
+    /// mail history knows the address too (#307).
+    pub from_directory: bool,
     /// How often this address appears in mail history (0 for contacts-only).
     pub score: u32,
     /// One of the user's own account addresses: offered, since people do
@@ -64,6 +67,7 @@ pub fn suggestions(own: &[(String, String)]) -> Vec<Suggestion> {
             name: c.name,
             email: c.email,
             from_contacts: true,
+            from_directory: false,
             score: 0,
             own: false,
         });
@@ -77,7 +81,7 @@ pub fn suggestions(own: &[(String, String)]) -> Vec<Suggestion> {
             }
             map.entry(key)
                 .and_modify(|s| s.score = s.score.max(count))
-                .or_insert(Suggestion { name, email, from_contacts: false, score: count, own: false });
+                .or_insert(Suggestion { name, email, from_contacts: false, from_directory: false, score: count, own: false });
         }
     }
 
@@ -90,6 +94,7 @@ pub fn suggestions(own: &[(String, String)]) -> Vec<Suggestion> {
             name: if name.trim().is_empty() { email.clone() } else { name.clone() },
             email: email.clone(),
             from_contacts: false,
+            from_directory: false,
             score: 0,
             own: true,
         });

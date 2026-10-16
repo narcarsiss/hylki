@@ -2,6 +2,78 @@
 
 Hylki (formerly Vireo) is a clean, fast, GNOME-native email client built with Rust and libadwaita for Wayland desktops. Privacy-first: no telemetry, remote content blocked by default, and credentials kept in the system keyring.
 
+## What's new in 1.44.0
+
+New features:
+
+- Gmail keyboard shortcuts, switched on in Settings → System - (#392)
+- A command palette on Ctrl+K - (#399)
+- Smart folders - (#417)
+- Several signatures per account - (#445)
+- A Hylki address book, with vCard import and export - (#379)
+- LDAP directories in the Contacts address book list - (#307)
+- Colleagues from the Microsoft 365 organization directory as recipients - (#410)
+- Gmail labels as colored pills, and tags set as Gmail labels - (#374)
+- Search results say which folder they are in - (#374)
+- A search scope that leaves out Trash and Junk, and one that takes them in - (#374)
+- One sort and filter button, with more quick filters - (#441)
+- The message list grouped by date - (#435)
+- Customize Columns… on the column headings' right-click menu - (#443)
+- Font sizes, more fonts and any color in the composer - (#358)
+- A font and size for new messages, set in Settings → Composing - (#358)
+- Addresses in To, Cc and Bcc as pills
+- A reply sent from the reading pane becomes its card in the conversation
+- Sensitivity labels shown in the reader, by name - (#411)
+- Unsubscribe can delete what the list sent - (#407)
+- .eml and Outlook .msg files open in Hylki - (#398)
+- Settings → System → Storage shows and limits downloaded mail - (#394)
+- Settings → System → Renderer chooses how GTK draws - (#403)
+- Insert Signature in the composer - (#385)
+- Create Filter from Message…, by @fsoft72 - (#428)
+- Filters on whether the sender is in Contacts - (#384)
+- Tagged messages tint their row - (#383)
+- Clicking the unread dot marks a message read - (#380)
+- A switch to draw one message light or dark - (#386)
+- Empty Trash or Junk in every account at once - (#413)
+- Replies in plain text to mail sent in plain text - (#436)
+- An app icon count of the new mail only - (#431)
+- The status bar at the foot of the window - (#433)
+- A setting to keep the search field open - (#446)
+- A new-mail sound while Hylki is in front - (#337)
+- Hylki's own icons on every desktop, with a switch back to the desktop's
+- Animations follow GNOME's Reduce Animation switch
+
+Fixes:
+
+- a crash at startup on some folder names, by @Elliot-32 - (#409)
+- Hylki closing at launch when the session's locale is missing from the runtime - (#437)
+- switching folders pausing the window - (#401)
+- Microsoft 365 and JMAP folders showing only their newest 300 messages - (#429)
+- LDAP directories set up in Evolution never searched - (#307)
+- LDAP directories connecting without the encryption chosen for them - (#307)
+- Reply All putting your own address back in Cc, by @Dandiccf - (#448)
+- right-click menus doing nothing on X11, by @fsoft72 - (#427)
+- the composer keeping the formatting on screen in plain text - (#424)
+- the settings search listing every OpenPGP key - (#432)
+- the number keys tagging the wrong message while arrowing down the list - (#416)
+- the search field and about 40 other strings not translatable - (#419)
+- new mail landing just above the top of the list - (#400)
+- Edit as New adding a second signature - (#385)
+- your own replies showing in an opened conversation - (#388)
+- saving a signature emptying the list and the reader - (#382)
+- a removed account's mail showing under the next account
+- an account added to GNOME Online Accounts being slow to appear
+- confirming a contact's deletion deleting another contact
+
+Translations:
+
+- Italian, new, by @amivaleo
+- French, complete, by @frenchy82
+- Spanish, complete, by @danielmigueltejedor
+- Catalan by @jolupa
+- Greek by @yioannides
+- Portuguese and Brazilian Portuguese by @somepaulo
+
 ## What's new in 1.43.2
 
 Fixes:

@@ -79,7 +79,7 @@ impl SimpleComponent for Directories {
                             set_child = &adw::PreferencesPage {
                                 add = &adw::PreferencesGroup {
                                     set_title: &i18n("LDAP directories"),
-                                    set_description: Some(&i18n("The composer looks up recipients in these directories as you type an address. They are kept by Evolution Data Server, so a directory set up in Evolution is listed here too.")),
+                                    set_description: Some(&i18n("The composer looks up recipients in these directories as you type an address, and a search in Contacts looks in them too. They are kept by Evolution Data Server, so a directory set up in Evolution is listed here too.")),
                                     #[wrap(Some)]
                                     #[name = "add_btn"]
                                     set_header_suffix = &gtk::Button {
@@ -410,10 +410,17 @@ impl Directories {
             if !d.base_dn.is_empty() {
                 sub.push_str(&format!(" · {}", d.base_dn));
             }
-            let subtitle = gtk::Label::new(Some(&sub));
+            // Why the last lookup failed, until one succeeds: otherwise the
+            // composer just never suggests anyone from it (#307).
+            let failed = if d.enabled { directory::last_error(&d.uid) } else { None };
+            let subtitle = gtk::Label::new(Some(failed.as_deref().unwrap_or(&sub)));
             subtitle.set_halign(gtk::Align::Start);
             subtitle.set_ellipsize(gtk::pango::EllipsizeMode::End);
             subtitle.add_css_class("account-email");
+            if let Some(e) = &failed {
+                subtitle.add_css_class("error");
+                subtitle.set_tooltip_text(Some(e));
+            }
             vbox.append(&title);
             vbox.append(&subtitle);
             hbox.append(&vbox);

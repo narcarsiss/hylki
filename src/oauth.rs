@@ -224,24 +224,31 @@ pub fn preset(provider: &str) -> Option<Preset> {
 pub const MICROSOFT_DIRECTORY_SCOPES: [&str; 2] =
     ["https://graph.microsoft.com/People.Read", "https://graph.microsoft.com/User.ReadBasic.All"];
 
-/// Whether `scope` is the directory scope `full`, written out or as
-/// Graph's short name, the way the Advanced row takes them.
+/// What reading the names of the organization's sensitivity labels needs
+/// (#411), when a message's label leaves its name out. Asked for only when
+/// the account's label switch is turned on, for the same reason as the
+/// directory's.
+pub const MICROSOFT_LABEL_SCOPES: [&str; 1] = ["https://graph.microsoft.com/InformationProtectionPolicy.Read"];
+
+/// Every scope Hylki adds to its own sign-in on request.
+const MICROSOFT_EXTRA_SCOPES: [&[&str]; 2] = [&MICROSOFT_DIRECTORY_SCOPES, &MICROSOFT_LABEL_SCOPES];
+
+/// Whether `scope` is the scope `full`, written out or as Graph's short
+/// name, the way the Advanced row takes them.
 fn is_scope(scope: &str, full: &str) -> bool {
     scope.eq_ignore_ascii_case(full)
         || full.rsplit('/').next().is_some_and(|short| scope.eq_ignore_ascii_case(short))
 }
 
-/// Whether a sign-in with `scopes` was granted the directory search.
-pub fn has_directory_scopes(scopes: &str) -> bool {
-    MICROSOFT_DIRECTORY_SCOPES
-        .iter()
-        .all(|full| scopes.split_whitespace().any(|s| is_scope(s, full)))
+/// Whether a sign-in with `scopes` was granted all of `set`.
+pub fn has_scopes(scopes: &str, set: &[&str]) -> bool {
+    set.iter().all(|full| scopes.split_whitespace().any(|s| is_scope(s, full)))
 }
 
-/// `scopes` with the directory's added where missing.
-pub fn with_directory_scopes(scopes: &str) -> String {
+/// `scopes` with those of `set` added where missing.
+pub fn with_scopes(scopes: &str, set: &[&str]) -> String {
     let mut list: Vec<&str> = scopes.split_whitespace().collect();
-    for full in MICROSOFT_DIRECTORY_SCOPES {
+    for full in set {
         if !list.iter().any(|s| is_scope(s, full)) {
             list.push(full);
         }
@@ -249,13 +256,23 @@ pub fn with_directory_scopes(scopes: &str) -> String {
     list.join(" ")
 }
 
-/// `scopes` without the directory's as Hylki adds them, so a sign-in that
+/// Whether a sign-in with `scopes` was granted the directory search.
+pub fn has_directory_scopes(scopes: &str) -> bool {
+    has_scopes(scopes, &MICROSOFT_DIRECTORY_SCOPES)
+}
+
+/// `scopes` with the directory's added where missing.
+pub fn with_directory_scopes(scopes: &str) -> String {
+    with_scopes(scopes, &MICROSOFT_DIRECTORY_SCOPES)
+}
+
+/// `scopes` without the ones Hylki adds as it adds them, so a sign-in that
 /// has them still reads as Hylki's own and the Advanced row stays empty.
 /// Short names typed into that row are the user's and stay.
-fn without_directory_scopes(scopes: &str) -> String {
+fn without_extra_scopes(scopes: &str) -> String {
     scopes
         .split_whitespace()
-        .filter(|s| !MICROSOFT_DIRECTORY_SCOPES.iter().any(|full| s.eq_ignore_ascii_case(full)))
+        .filter(|s| !MICROSOFT_EXTRA_SCOPES.iter().flat_map(|set| set.iter()).any(|full| s.eq_ignore_ascii_case(full)))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -301,8 +318,8 @@ pub fn microsoft_advanced_of(settings: &OAuthSettings) -> (String, String, Strin
         .filter(|t| *t != "common")
         .unwrap_or_default()
         .to_string();
-    let own = without_directory_scopes(&settings.scopes);
-    let scopes = if own == without_directory_scopes(p.scopes) { String::new() } else { own };
+    let own = without_extra_scopes(&settings.scopes);
+    let scopes = if own == without_extra_scopes(p.scopes) { String::new() } else { own };
     (client, tenant, scopes, settings.redirect_uri.clone())
 }
 
@@ -894,6 +911,11 @@ mod tests {
         let own = OAuthSettings { scopes: "Mail.ReadWrite people.read User.ReadBasic.All offline_access".into(), ..s };
         assert!(has_directory_scopes(&own.scopes));
         assert_eq!(microsoft_advanced_of(&own).2, own.scopes);
+        // The label scope (#411) rides along the same way.
+        let both = with_scopes(&with_directory_scopes(p.scopes), &MICROSOFT_LABEL_SCOPES);
+        assert!(has_scopes(&both, &MICROSOFT_LABEL_SCOPES) && has_directory_scopes(&both));
+        assert!(!has_scopes(p.scopes, &MICROSOFT_LABEL_SCOPES));
+        assert_eq!(microsoft_advanced_of(&OAuthSettings { scopes: both, ..own.clone() }), Default::default());
         assert_eq!(microsoft_prompt(None), "&prompt=select_account");
         assert_eq!(microsoft_prompt(Some(" ")), "&prompt=select_account");
         assert_eq!(microsoft_prompt(Some("ann+x@contoso.com")), "&login_hint=ann%2Bx%40contoso.com");

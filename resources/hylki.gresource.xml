@@ -120,6 +120,7 @@
     <file>icons/scalable/actions/hylki-importance-low-symbolic.svg</file>
     <file>icons/scalable/actions/hylki-mail-read-symbolic.svg</file>
     <file>icons/scalable/actions/hylki-non-starred-symbolic.svg</file>
+    <file>icons/scalable/actions/hylki-open-menu-symbolic.svg</file>
     <file>icons/scalable/actions/image-x-generic-symbolic.svg</file>
     <file>icons/scalable/actions/info-outline-symbolic.svg</file>
     <file>icons/scalable/actions/insert-image-symbolic.svg</file>
@@ -176,6 +177,7 @@
     <file>icons/scalable/actions/system-run-symbolic.svg</file>
     <file>icons/scalable/actions/system-search-symbolic.svg</file>
     <file>icons/scalable/actions/tag-outline-symbolic.svg</file>
+    <file>icons/scalable/actions/tag-symbolic.svg</file>
     <file>icons/scalable/actions/text-x-generic-symbolic.svg</file>
     <file>icons/scalable/actions/translate-symbolic.svg</file>
     <file>icons/scalable/actions/user-bookmarks-symbolic.svg</file>
@@ -213,5 +215,7 @@
     <file>icons/scalable/actions/zoom-in-symbolic.svg</file>
     <file>icons/scalable/actions/zoom-original-symbolic.svg</file>
     <file>icons/scalable/actions/zoom-out-symbolic.svg</file>
+    <file>icons/scalable/apps/co.hyprlab.Hylki.Beta.svg</file>
+    <file>icons/scalable/apps/co.hyprlab.Hylki.svg</file>
   </gresource>
 </gresources>

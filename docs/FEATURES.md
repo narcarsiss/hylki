@@ -48,6 +48,9 @@ The full list. The [README](../README.md) carries a shorter one.
 - **Tags:** IMAP keywords, Graph categories, or a local fallback where the
   server has neither; custom colours, drag to reorder, and number-key
   shortcuts. Gmail's labels show beside them.
+- **Quick filters:** unread, starred, attachments, addressed to you, from
+  your contacts, high importance, tagged and today, combined, in one popover
+  above the list with the sort orders. See [Message list layout](DOCUMENTATION.md#message-list-layout).
 - **Smart folders:** saved searches across accounts and folders, on
   starred, unread, attachments, tags and the filter conditions, with unread
   counts. See [Smart folders](DOCUMENTATION.md#smart-folders).
@@ -74,10 +77,11 @@ The full list. The [README](../README.md) carries a shorter one.
 - **Four formats:** rich text, Markdown, hand-written HTML, or plain text,
   switched per message from the composer's format button. See
   [Writing in Markdown or HTML](DOCUMENTATION.md#writing-in-markdown-or-html).
-  Rich text has fonts, sizes, any color, headings, lists and pictures.
-- **HTML signatures**, per account, with a default sender for new mail. In a
-  reply or forward the signature sits above the quoted message, or below it
-  if you prefer.
+  Rich text has fonts, sizes, any color, headings, lists and pictures, and
+  is sent as HTML.
+- **HTML signatures**, several per account, picked by name in the composer,
+  with a default sender for new mail. In a reply or forward the signature
+  sits above the quoted message, or below it if you prefer.
 - **Drafts** that can be saved without a recipient, reopened inline, and
   deleted from the composer.
 - **Templates:** save a message as a template and start new ones from it,

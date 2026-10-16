@@ -49,7 +49,7 @@ impl Query {
 }
 
 /// Open the palette over `parent` with `entries`, in the order given.
-pub fn show(parent: &impl IsA<gtk::Widget>, entries: Vec<Entry>) {
+pub fn show(parent: &impl IsA<gtk::Widget>, entries: Vec<Entry>, typed: &str) {
     let dialog = adw::Dialog::builder()
         .title(i18n("Command Palette"))
         .content_width(560)
@@ -188,11 +188,25 @@ pub fn show(parent: &impl IsA<gtk::Widget>, entries: Vec<Entry>) {
         search.add_controller(keys);
     }
 
+    if !typed.is_empty() {
+        search.set_text(typed);
+        *query.borrow_mut() = Query::parse(typed);
+        list.invalidate_filter();
+    }
     if let Some(first) = shown(&list).first() {
         list.select_row(Some(first));
     }
     dialog.present(Some(parent));
     search.grab_focus();
+    if !typed.is_empty() {
+        // Past what was typed for the user, not selecting it: the dialog
+        // gives the entry its focus once mapped, and that selects all.
+        let search = search.clone();
+        gtk::glib::idle_add_local_once(move || {
+            search.select_region(-1, -1);
+            search.set_position(-1);
+        });
+    }
 }
 
 #[cfg(test)]

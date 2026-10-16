@@ -1351,6 +1351,8 @@ pub(crate) fn blank_account() -> AccountConfig {
         gravatar: false,
         signature: None,
         signature_html: false,
+        signatures: Vec::new(),
+        default_signature: None,
         label: None,
         aliases: Vec::new(),
         enabled: true,
@@ -1374,5 +1376,7 @@ pub(crate) fn blank_account() -> AccountConfig {
         folder_sort: None,
         sign_by_default: false,
         graph_directory: false,
+        graph_directory_only: false,
+        graph_label_names: false,
     }
 }

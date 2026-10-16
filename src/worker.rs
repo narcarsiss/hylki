@@ -2041,7 +2041,25 @@ async fn run_imap(
 
             MailRequest::SetKeyword { path, uid, message_id, keyword, add } => {
                 let sess = session.as_mut().unwrap();
-                match store_keyword(sess, &path, uid, &keyword, add).await {
+                let stored = store_keyword(sess, &path, uid, &keyword, add).await;
+                // On Gmail a tag is a label too (#374), so Gmail's own apps
+                // show it; the keyword stays for other IMAP clients.
+                if stored.is_ok() && gmail_labels_wanted(account_id) {
+                    let labels = tag_labels(&keyword, add);
+                    match store_gmail_labels(sess, uid, &labels, add).await {
+                        Ok(()) => {
+                            if let Some(c) = cache.as_ref() {
+                                c.set_gmail_label(account_id, &path, uid, &labels, add);
+                            }
+                            // A new label is a new folder on Gmail.
+                            if add {
+                                folder_refresh_due = true;
+                            }
+                        }
+                        Err(e) => tracing::warn!("[account {account_id}] could not set Gmail label: {e}"),
+                    }
+                }
+                match stored {
                     Ok(true) => {
                         if let Some(c) = cache.as_ref() {
                             c.set_keyword(account_id, &path, uid, &keyword, add);
@@ -3016,7 +3034,7 @@ async fn load_bodies_retry(
 
 /// Whether the account is Gmail, where a folder is a label and one message
 /// sits in several of them at once.
-fn has_gmail_labels(account: &AccountConfig, folders: &[Folder]) -> bool {
+pub(crate) fn has_gmail_labels(account: &AccountConfig, folders: &[Folder]) -> bool {
     let host = account.imap_host.to_ascii_lowercase();
     host.ends_with("gmail.com")
         || host.ends_with("googlemail.com")
@@ -4705,6 +4723,19 @@ fn build_email(account: &AccountConfig, msg: &OutgoingMessage) -> Result<LettreM
     build_message(account, msg, false)
 }
 
+/// The body the reader will show for `msg` once its copy is read back from
+/// Sent: the bytes a send builds, through the same extraction, so the card a
+/// sent reply gets at once is the card its copy draws later. Attachments
+/// and OpenPGP are left out; neither changes the body shown.
+pub(crate) fn sent_body_preview(account: &AccountConfig, msg: &OutgoingMessage) -> Option<String> {
+    let mut msg = msg.clone();
+    msg.attachments.clear();
+    msg.sign = false;
+    msg.encrypt = false;
+    let email = build_email(account, &msg).ok()?;
+    Some(extract_body(&email.formatted()))
+}
+
 /// Build the same bytes for the Drafts folder. A draft is often saved before
 /// any address is typed (the composer saves on the way out whenever the body
 /// was edited), and lettre refuses to build a message whose envelope has no
@@ -6054,6 +6085,40 @@ async fn store_keyword(
         .try_collect()
         .await?;
     Ok(true)
+}
+
+/// The Gmail labels a tag means (#374), as the server writes label names:
+/// the tag's name when it is put on; when it comes off, every label that
+/// stands for it, its name's and its keyword's.
+fn tag_labels(keyword: &str, add: bool) -> Vec<String> {
+    let name = crate::config::load_tags()
+        .into_iter()
+        .find(|t| t.keyword.eq_ignore_ascii_case(keyword))
+        .map(|t| t.name)
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| keyword.to_string());
+    let mut out = vec![crate::mutf7::encode(&name)];
+    if !add && !name.eq_ignore_ascii_case(keyword) {
+        out.push(crate::mutf7::encode(keyword));
+    }
+    out
+}
+
+/// Put Gmail labels on a message in the selected folder, or take them off.
+async fn store_gmail_labels(
+    session: &mut ImapSession,
+    uid: u32,
+    labels: &[String],
+    add: bool,
+) -> Result<(), async_imap::error::Error> {
+    let quoted: Vec<String> =
+        labels.iter().map(|l| format!("\"{}\"", l.replace('\\', "\\\\").replace('"', "\\\""))).collect();
+    let op = if add { "+X-GM-LABELS" } else { "-X-GM-LABELS" };
+    let _: Vec<Fetch> = store_uids(session, uid.to_string(), format!("{op} ({})", quoted.join(" ")))
+        .await?
+        .try_collect()
+        .await?;
+    Ok(())
 }
 
 /// Move a message to `dest`, creating (and subscribing to) the destination
@@ -8593,6 +8658,44 @@ async fn backfill_worklist(
     Ok(remaining)
 }
 
+/// The cached rows a listing of a folder's newest mail shows to be gone
+/// (#429), for the Graph and JMAP paths, whose listings no longer replace
+/// the cached folder. A `complete` listing is the whole folder; otherwise it
+/// speaks only for mail newer than the oldest it holds, the rest being the
+/// background index's to reconcile.
+fn window_gone(cached: &std::collections::HashMap<u32, i64>, listed: &[Message], complete: bool) -> Vec<u32> {
+    let seen: std::collections::HashSet<u32> = listed.iter().map(|m| m.uid).collect();
+    let oldest = listed.iter().map(|m| m.timestamp).min();
+    let mut gone: Vec<u32> = cached
+        .iter()
+        .filter(|(uid, ts)| {
+            !seen.contains(uid) && (complete || oldest.is_some_and(|oldest| **ts > oldest))
+        })
+        .map(|(uid, _)| *uid)
+        .collect();
+    gone.sort_unstable();
+    gone
+}
+
+/// The cached rows a complete id listing of a folder shows to be gone
+/// (#429). A row that arrived since the listing began (`since`, less a
+/// margin for the server's clock) is spared: the listing could not know
+/// it, and the next look at the folder's newest mail settles it.
+fn listing_gone(
+    cached: &std::collections::HashMap<u32, i64>,
+    server: &std::collections::HashSet<u32>,
+    since: i64,
+) -> Vec<u32> {
+    let cutoff = since - 600;
+    let mut gone: Vec<u32> = cached
+        .iter()
+        .filter(|(uid, ts)| !server.contains(uid) && **ts < cutoff)
+        .map(|(uid, _)| *uid)
+        .collect();
+    gone.sort_unstable();
+    gone
+}
+
 /// Fetch message summaries for a specific set of UIDs (used by the backfill).
 async fn fetch_summaries_by_uid(
     account_id: u32,
@@ -10465,7 +10568,7 @@ pub fn extract_body(raw: &[u8]) -> String {
         }
         match &part.body {
             PartType::Text(text) if !text.trim().is_empty() => {
-                inner.push_str("<div class=\"vireo-plain\">");
+                inner.push_str("<div class=\"hylki-plain\">");
                 inner.push_str(&linkify(text));
                 inner.push_str("</div>");
             }
@@ -10484,7 +10587,7 @@ pub fn extract_body(raw: &[u8]) -> String {
                     if let Some(left) = budget.checked_sub(bytes.len()) {
                         budget = left;
                         inner.push_str(&format!(
-                            "<img class=\"vireo-inline\" src=\"data:{mime};base64,{}\">",
+                            "<img class=\"hylki-inline\" src=\"data:{mime};base64,{}\">",
                             crate::oauth::base64_encode(bytes)
                         ));
                     }
@@ -10730,7 +10833,7 @@ fn consume_url(text: &str, start: usize) -> usize {
 /// light/dark theme — and no padding is baked in: the reader injects the
 /// default inset at render time, so it stays tunable without invalidating
 /// every cached body (bodies are stored rendered; see cache SCHEMA_VERSION).
-fn wrap_plain(text: &str) -> String {
+pub(crate) fn wrap_plain(text: &str) -> String {
     let escaped = linkify(text);
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><style>\
@@ -10746,8 +10849,8 @@ fn wrap_fragment(inner: &str) -> String {
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><style>\
          body{{margin:0;font:14px/1.5 system-ui,sans-serif}}\
-         .vireo-plain{{white-space:pre-wrap;word-wrap:break-word}}\
-         .vireo-inline{{display:block;max-width:100%;height:auto;\
+         .hylki-plain{{white-space:pre-wrap;word-wrap:break-word}}\
+         .hylki-inline{{display:block;max-width:100%;height:auto;\
          margin:12px 0;border-radius:6px}}\
          </style></head><body>{inner}</body></html>"
     )
@@ -10879,6 +10982,8 @@ pub(super) fn sample_account() -> AccountConfig {
         folder_sort: None,
         sign_by_default: false,
         graph_directory: false,
+        graph_directory_only: false,
+        graph_label_names: false,
         push: None,
         name: String::new(),
         email: "me@example.com".into(),
@@ -10902,6 +11007,8 @@ pub(super) fn sample_account() -> AccountConfig {
         gravatar: false,
         signature: None,
         signature_html: false,
+        signatures: Vec::new(),
+        default_signature: None,
         label: None,
         aliases: Vec::new(),
         enabled: true,

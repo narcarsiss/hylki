@@ -1195,6 +1195,31 @@ impl Message {
         }
     }
 
+    /// Whether the message carries `tag`: its keyword, or on Gmail a label
+    /// named like it (#374), which is how a tag set in Gmail itself arrives.
+    pub fn has_tag(&self, tag: &crate::config::Tag) -> bool {
+        self.has_keyword(&tag.keyword) || self.labels.iter().any(|l| label_names_tag(l, tag))
+    }
+
+    /// The message's keywords, with the keyword of every tag a Gmail label
+    /// stands for: what the tag checks go by.
+    pub fn tag_keywords(&self, tags: &[crate::config::Tag]) -> Vec<String> {
+        let mut out = self.keywords.clone();
+        for t in tags {
+            if !self.has_keyword(&t.keyword) && self.labels.iter().any(|l| label_names_tag(l, t)) {
+                out.push(t.keyword.clone());
+            }
+        }
+        out
+    }
+
+    /// Take a tag off this copy of the message: its keyword and the labels
+    /// that stand for it.
+    pub fn drop_tag(&mut self, tag: &crate::config::Tag) {
+        self.set_keyword(&tag.keyword, false);
+        self.labels.retain(|l| !label_names_tag(l, tag));
+    }
+
     /// The pills the message wears in the list and the reader; see [`pills`].
     pub fn pills<'a>(&self, tags: &'a [crate::config::Tag]) -> Vec<Pill<'a>> {
         pills(&self.keywords, &self.labels, tags)
@@ -1283,6 +1308,25 @@ pub fn pills<'a>(
         }
     }
     out
+}
+
+/// Which of the tag palette's colors a Gmail label no tag stands for wears
+/// (#374): worked out from its name, so a label has the same color on every
+/// row, in the reader and from one run to the next. A tag named like the
+/// label is how a user picks the color instead.
+pub fn label_hue(name: &str) -> usize {
+    // FNV-1a: std's hasher makes no promise to stay the same across releases.
+    let hash = name
+        .to_lowercase()
+        .bytes()
+        .fold(0x811c_9dc5_u32, |h, b| (h ^ b as u32).wrapping_mul(0x0100_0193));
+    hash as usize % crate::config::TAG_COLORS.len()
+}
+
+/// Whether a Gmail label (as the server writes it, modified UTF-7) stands for
+/// a tag: named like its keyword, or like its name.
+pub fn label_names_tag(label: &str, tag: &crate::config::Tag) -> bool {
+    tag.keyword.eq_ignore_ascii_case(label) || tag.name.eq_ignore_ascii_case(&crate::mutf7::decode(label))
 }
 
 /// A short date for a single line: the time for today, the day and month
@@ -1408,6 +1452,46 @@ mod tests {
         );
         assert!(pills(&[], &[], &tags).is_empty());
         assert_eq!(pills(&[], &["&AAA-".to_string()], &[]), [Pill::Label(" ".into())]);
+    }
+
+    /// #374: a label's color follows its name, whatever the case, and the
+    /// palette is spread over rather than one color for all.
+    #[test]
+    fn a_label_keeps_one_color() {
+        assert_eq!(label_hue("Clients/Acme"), label_hue("clients/acme"));
+        // Pinned: a label must not change color between releases.
+        assert_eq!(["Work", "Clients", "Newsletters"].map(label_hue), [0, 7, 3]);
+        let hues: std::collections::HashSet<usize> =
+            ["Travel", "Receipts", "Clients", "Family", "Newsletters", "Bills", "School", "Friends"]
+                .iter()
+                .map(|n| label_hue(n))
+                .collect();
+        assert!(hues.len() >= 4, "{hues:?}");
+        assert!(hues.iter().all(|&h| h < crate::config::TAG_COLORS.len()));
+    }
+
+    /// #374: a Gmail label named like a tag is the tag, for every check that
+    /// asks; taking the tag off takes those labels too.
+    #[test]
+    fn a_label_named_like_a_tag_is_the_tag() {
+        let tag = |name: &str, keyword: &str| crate::config::Tag {
+            name: name.into(),
+            keyword: keyword.into(),
+            color: "#1c71d8".into(),
+        };
+        let work = tag("Work", "$label2");
+        let ete = tag("Été", "ete");
+        let mut m = crate::backend::MockBackend::new().message(1).expect("a demo message");
+        m.keywords.clear();
+        m.labels = vec!["work".into(), "&AMk-t&AOk-".into(), "Other".into()];
+        assert!(m.has_tag(&work) && m.has_tag(&ete));
+        assert!(!m.has_tag(&tag("Home", "home")));
+        assert_eq!(m.tag_keywords(&[work.clone(), ete.clone()]), ["$label2", "ete"]);
+        m.keywords = vec!["$Label2".into()];
+        assert_eq!(m.tag_keywords(&[work.clone()]), ["$Label2"], "no second copy of a keyword it has");
+        m.drop_tag(&work);
+        assert!(!m.has_tag(&work) && m.keywords.is_empty());
+        assert_eq!(m.labels, ["&AMk-t&AOk-", "Other"]);
     }
 
     /// #334: each priority header's spellings, and normal for anything else.

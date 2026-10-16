@@ -108,9 +108,27 @@ pub struct NotificationCenter {
     /// Newest console_log sequence already rendered.
     console_seq: u64,
     console_buf: gtk::TextBuffer,
-    console_view: Option<gtk::TextView>,
+    /// Whether the console sticks to its newest line: true until the user
+    /// scrolls up to read, true again once they scroll back to the bottom.
+    console_follow: std::rc::Rc<std::cell::Cell<bool>>,
     console_scroll: Option<gtk::ScrolledWindow>,
     console_grain: Option<gtk::DrawingArea>,
+    /// Whether the bar sits at the top of the window rather than its foot
+    /// (Settings, #433); shared with the console grip's drag.
+    top: std::rc::Rc<std::cell::Cell<bool>>,
+    /// What [`NotificationCenter::place`] puts in order for either end.
+    layout: Option<Layout>,
+}
+
+/// The parts of the bar whose order follows the end of the window it is at:
+/// the bar nearest the window's edge, the cards and the console opening
+/// away from it, and the console's grip on its far side.
+struct Layout {
+    root: gtk::Revealer,
+    area: gtk::Box,
+    bar: gtk::WindowHandle,
+    console_box: gtk::Box,
+    grip: gtk::Box,
 }
 
 #[derive(Debug)]
@@ -135,6 +153,8 @@ pub enum NotifyInput {
     ExportLog,
     /// Settings: whether console mode is offered (button + menu).
     SetConsoleEnabled(bool),
+    /// Settings: the bar at the top of the window (`true`) or its foot.
+    SetAtTop(bool),
     /// Console tick: pull new log lines (and reschedule while open).
     PollConsole,
     /// Second stage of ShowConsole: slide the console open once the bar
@@ -162,18 +182,111 @@ impl SimpleComponent for NotificationCenter {
     type Output = NotifyOutput;
 
     view! {
+        // At the window's foot by default, so the bar coming up never moves
+        // what is being read or written (#433); the cards and the console
+        // open away from the window's edge. Settings can put it at the top.
         gtk::Revealer {
-            set_transition_type: gtk::RevealerTransitionType::SlideDown,
+            #[watch]
+            set_transition_type: model.slide(),
             #[watch]
             set_reveal_child: model.transient_visible || model.panel_open,
 
+            #[name = "area"]
             gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
                 #[watch]
                 set_css_classes: &model.area_classes(),
 
+                // Only the cards section expands; an empty panel stays at bar
+                // height (just shows the status / "Status bar (0)" row).
+                gtk::Revealer {
+                    #[watch]
+                    set_transition_type: model.slide(),
+                    #[watch]
+                    set_reveal_child: model.panel_open
+                        && !model.console_open
+                        && !model.ids.is_empty(),
+
+                    gtk::ScrolledWindow {
+                        set_propagate_natural_height: true,
+                        set_max_content_height: 320,
+                        set_hscrollbar_policy: gtk::PolicyType::Never,
+
+                        #[local_ref]
+                        cards_box -> gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_spacing: 8,
+                            add_css_class: "notify-cards",
+                        },
+                    },
+                },
+
+                // Console mode: the dracula terminal, expanding the bar
+                // further. Selectable text; a CSS-scanline + drawn-grain
+                // overlay gives it the old-CRT cast.
+                gtk::Revealer {
+                    #[watch]
+                    set_transition_type: model.slide(),
+                    set_transition_duration: 350,
+                    #[watch]
+                    set_reveal_child: model.console_open,
+
+                    #[name = "console_box"]
+                    gtk::Box {
+                        set_orientation: gtk::Orientation::Vertical,
+
+                        // Drag grip: pull the console taller (160px floor).
+                        #[name = "console_grip"]
+                        gtk::Box {
+                            add_css_class: "console-grip",
+                            set_cursor_from_name: Some("ns-resize"),
+                            set_halign: gtk::Align::Fill,
+
+                            gtk::Box {
+                                add_css_class: "console-grip-bar",
+                                set_halign: gtk::Align::Center,
+                                set_valign: gtk::Align::Center,
+                                set_hexpand: true,
+                            },
+                        },
+
+                        gtk::Overlay {
+                            #[name = "console_scroll"]
+                            gtk::ScrolledWindow {
+                                set_min_content_height: 160,
+                                set_max_content_height: 160,
+                                set_hscrollbar_policy: gtk::PolicyType::Never,
+
+                                gtk::TextView {
+                                    set_buffer: Some(&console_buf),
+                                    add_css_class: "console-view",
+                                    set_editable: false,
+                                    set_cursor_visible: false,
+                                    set_monospace: true,
+                                    set_wrap_mode: gtk::WrapMode::WordChar,
+                                    set_left_margin: 10,
+                                    set_right_margin: 10,
+                                    set_top_margin: 8,
+                                    set_bottom_margin: 8,
+                                },
+                            },
+
+                            add_overlay = &gtk::Box {
+                                add_css_class: "console-scanlines",
+                                set_can_target: false,
+                            },
+
+                            #[name = "console_grain"]
+                            add_overlay = &gtk::DrawingArea {
+                                set_can_target: false,
+                            },
+                        },
+                    },
+                },
+
                 // A WindowHandle so the bar can drag the window, like a title bar.
                 // Interactive children (the buttons) still receive their clicks.
+                #[name = "bar"]
                 gtk::WindowHandle {
                     gtk::Box {
                         add_css_class: "notify-bar",
@@ -200,23 +313,6 @@ impl SimpleComponent for NotificationCenter {
                             connect_clicked => NotifyInput::ClearAll,
                         },
 
-                        gtk::Button {
-                            #[watch]
-                            set_icon_name: if model.panel_open { "pan-up-symbolic" } else { "pan-down-symbolic" },
-                            set_tooltip_text: Some(i18n("Collapse status bar").as_str()),
-                            add_css_class: "flat",
-                            connect_clicked => NotifyInput::TogglePanel,
-                        },
-
-                        // Console mode (far right): the verbose live log.
-                        gtk::Button {
-                            #[watch]
-                            set_visible: model.console_enabled,
-                            set_icon_name: "code-symbolic",
-                            set_tooltip_text: Some(i18n("Console").as_str()),
-                            add_css_class: "flat",
-                            connect_clicked => NotifyInput::ShowConsole,
-                        },
                         // While the console is open: save its log to a file.
                         gtk::Button {
                             #[watch]
@@ -226,90 +322,22 @@ impl SimpleComponent for NotificationCenter {
                             add_css_class: "flat",
                             connect_clicked => NotifyInput::ExportLog,
                         },
-                    },
-                },
-
-                // Only the cards section expands; an empty panel stays at bar
-                // height (just shows the status / "Status bar (0)" row).
-                gtk::Revealer {
-                    set_transition_type: gtk::RevealerTransitionType::SlideDown,
-                    #[watch]
-                    set_reveal_child: model.panel_open
-                        && !model.console_open
-                        && !model.ids.is_empty(),
-
-                    gtk::ScrolledWindow {
-                        set_propagate_natural_height: true,
-                        set_max_content_height: 320,
-                        set_hscrollbar_policy: gtk::PolicyType::Never,
-
-                        #[local_ref]
-                        cards_box -> gtk::Box {
-                            set_orientation: gtk::Orientation::Vertical,
-                            set_spacing: 8,
-                            add_css_class: "notify-cards",
+                        // Console mode: the verbose live log.
+                        gtk::Button {
+                            #[watch]
+                            set_visible: model.console_enabled,
+                            set_icon_name: "code-symbolic",
+                            set_tooltip_text: Some(i18n("Console").as_str()),
+                            add_css_class: "flat",
+                            connect_clicked => NotifyInput::ShowConsole,
                         },
-                    },
-                },
-
-                // Console mode: the dracula terminal, expanding the bar
-                // further down. Selectable text; a CSS-scanline + drawn-grain
-                // overlay gives it the old-CRT cast.
-                gtk::Revealer {
-                    set_transition_type: gtk::RevealerTransitionType::SlideDown,
-                    set_transition_duration: 350,
-                    #[watch]
-                    set_reveal_child: model.console_open,
-
-                    gtk::Box {
-                        set_orientation: gtk::Orientation::Vertical,
-
-                        gtk::Overlay {
-                            #[name = "console_scroll"]
-                            gtk::ScrolledWindow {
-                                set_min_content_height: 160,
-                                set_max_content_height: 160,
-                                set_hscrollbar_policy: gtk::PolicyType::Never,
-
-                                #[name = "console_view"]
-                                gtk::TextView {
-                                    set_buffer: Some(&console_buf),
-                                    add_css_class: "console-view",
-                                    set_editable: false,
-                                    set_cursor_visible: false,
-                                    set_monospace: true,
-                                    set_wrap_mode: gtk::WrapMode::WordChar,
-                                    set_left_margin: 10,
-                                    set_right_margin: 10,
-                                    set_top_margin: 8,
-                                    set_bottom_margin: 8,
-                                },
-                            },
-
-                            add_overlay = &gtk::Box {
-                                add_css_class: "console-scanlines",
-                                set_can_target: false,
-                            },
-
-                            #[name = "console_grain"]
-                            add_overlay = &gtk::DrawingArea {
-                                set_can_target: false,
-                            },
-                        },
-
-                        // Drag grip: pull the console taller (160px floor).
-                        #[name = "console_grip"]
-                        gtk::Box {
-                            add_css_class: "console-grip",
-                            set_cursor_from_name: Some("ns-resize"),
-                            set_halign: gtk::Align::Fill,
-
-                            gtk::Box {
-                                add_css_class: "console-grip-bar",
-                                set_halign: gtk::Align::Center,
-                                set_valign: gtk::Align::Center,
-                                set_hexpand: true,
-                            },
+                        // The bar's own toggle, always last.
+                        gtk::Button {
+                            #[watch]
+                            set_icon_name: model.chevron(),
+                            set_tooltip_text: Some(i18n("Collapse status bar").as_str()),
+                            add_css_class: "flat",
+                            connect_clicked => NotifyInput::TogglePanel,
                         },
                     },
                 },
@@ -329,9 +357,6 @@ impl SimpleComponent for NotificationCenter {
             });
 
         let console_buf = gtk::TextBuffer::new(None);
-        // Right-gravity end mark: stays at the end through inserts, giving
-        // the follow-scroll a stable target.
-        console_buf.create_mark(Some("end"), &console_buf.end_iter(), false);
 
         let mut model = NotificationCenter {
             cards,
@@ -349,17 +374,94 @@ impl SimpleComponent for NotificationCenter {
             console_opened_bar: false,
             console_seq: 0,
             console_buf: console_buf.clone(),
-            console_view: None,
+            console_follow: std::rc::Rc::new(std::cell::Cell::new(true)),
             console_scroll: None,
             console_grain: None,
+            top: std::rc::Rc::default(),
+            layout: None,
         };
 
         let cards_box = model.cards.widget();
         let widgets = view_output!();
-        model.console_view = Some(widgets.console_view.clone());
         model.console_scroll = Some(widgets.console_scroll.clone());
         model.console_grain = Some(widgets.console_grain.clone());
         widgets.console_grain.set_draw_func(draw_crt_grain);
+        {
+            // Only the user's own scrolling stops the console following its
+            // newest line. The text view moves the view by itself as it
+            // measures lines (back to the top on its first layout, and when
+            // old lines are cut), so a position read alone can't tell that
+            // apart from the user scrolling up to read.
+            let sw = widgets.console_scroll.clone();
+            let adj = sw.vadjustment();
+            // A button held in the console: what moves the view now is the
+            // user (the scrollbar, a selection drag).
+            let held = std::rc::Rc::new(std::cell::Cell::new(false));
+            let follow = model.console_follow.clone();
+            let h = held.clone();
+            adj.connect_value_changed(move |a| {
+                if a.value() + a.page_size() >= a.upper() - 1.0 {
+                    follow.set(true);
+                } else if h.get() {
+                    follow.set(false);
+                } else if follow.get() {
+                    a.set_value(a.upper() - a.page_size());
+                }
+            });
+            let follow = model.console_follow.clone();
+            adj.connect_changed(move |a| {
+                if follow.get() {
+                    a.set_value(a.upper() - a.page_size());
+                }
+            });
+            let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+            wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let follow = model.console_follow.clone();
+            let a = adj.clone();
+            wheel.connect_scroll(move |_, _, dy| {
+                if dy < 0.0 && a.value() > a.lower() {
+                    follow.set(false);
+                }
+                glib::Propagation::Proceed
+            });
+            sw.add_controller(wheel);
+            let input = gtk::EventControllerLegacy::new();
+            input.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let follow = model.console_follow.clone();
+            input.connect_event(move |_, ev| {
+                use gtk::gdk::{EventType as E, Key};
+                match ev.event_type() {
+                    E::ButtonPress | E::TouchBegin => held.set(true),
+                    E::ButtonRelease | E::TouchEnd | E::TouchCancel => held.set(false),
+                    // Keys are taken one at a time: a key held as the console
+                    // closes never sees its release here.
+                    E::KeyPress => {
+                        let up = ev
+                            .downcast_ref::<gtk::gdk::KeyEvent>()
+                            .is_some_and(|k| {
+                                matches!(
+                                    k.keyval(),
+                                    Key::Up | Key::KP_Up | Key::Page_Up | Key::KP_Page_Up
+                                        | Key::Home | Key::KP_Home
+                                )
+                            });
+                        if up && adj.value() > adj.lower() {
+                            follow.set(false);
+                        }
+                    }
+                    _ => {}
+                }
+                glib::Propagation::Proceed
+            });
+            sw.add_controller(input);
+        }
+        model.layout = Some(Layout {
+            root: root.clone(),
+            area: widgets.area.clone(),
+            bar: widgets.bar.clone(),
+            console_box: widgets.console_box.clone(),
+            grip: widgets.console_grip.clone(),
+        });
         {
             // Dragging the grip resizes the console; 160px stays the floor.
             // The pointer is tracked in ROOT coordinates: the grip itself
@@ -368,6 +470,7 @@ impl SimpleComponent for NotificationCenter {
             // demanding more height than the window can give (which flashes
             // as the layout fights itself).
             let drag = gtk::GestureDrag::new();
+            let top = model.top.clone();
             let sw = widgets.console_scroll.clone();
             let grip = widgets.console_grip.clone();
             let start = std::rc::Rc::new(std::cell::Cell::new((160i32, 0f32)));
@@ -401,7 +504,10 @@ impl SimpleComponent for NotificationCenter {
                     .map(|r| r.height() - 340)
                     .unwrap_or(i32::MAX)
                     .max(160);
-                let h = (start_h + (now - start_y) as i32).clamp(160, ceiling);
+                // The grip sits on the console's far side from the bar:
+                // below it with the bar at the top, above it at the foot.
+                let moved = (now - start_y) as i32;
+                let h = (start_h + if top.get() { moved } else { -moved }).clamp(160, ceiling);
                 sw.set_min_content_height(h);
                 sw.set_max_content_height(h);
             });
@@ -421,6 +527,56 @@ impl SimpleComponent for NotificationCenter {
 }
 
 impl NotificationCenter {
+    /// How the bar and its panels slide: away from the window's edge.
+    fn slide(&self) -> gtk::RevealerTransitionType {
+        if self.top.get() {
+            gtk::RevealerTransitionType::SlideDown
+        } else {
+            gtk::RevealerTransitionType::SlideUp
+        }
+    }
+
+    /// The bar's toggle points where the panel opens, or back where it folds.
+    fn chevron(&self) -> &'static str {
+        match (self.top.get(), self.panel_open) {
+            (true, true) | (false, false) => "pan-up-symbolic",
+            (true, false) | (false, true) => "pan-down-symbolic",
+        }
+    }
+
+    /// Open the console on its newest line, whatever was being read the last
+    /// time. The hidden view keeps its last measurements, so the jump lands
+    /// even when nothing new arrives to resize it.
+    fn follow_console(&self) {
+        self.console_follow.set(true);
+        if let Some(sw) = &self.console_scroll {
+            let adj = sw.vadjustment();
+            adj.set_value(adj.upper() - adj.page_size());
+        }
+    }
+
+    /// Put the bar at its end of the window, and its parts in order for it.
+    fn place(&self) {
+        let Some(l) = &self.layout else { return };
+        let top = self.top.get();
+        let none = None::<&gtk::Widget>;
+        if top {
+            l.area.reorder_child_after(&l.bar, none);
+            l.console_box.reorder_child_after(&l.grip, l.console_box.last_child().as_ref());
+        } else {
+            l.area.reorder_child_after(&l.bar, l.area.last_child().as_ref());
+            l.console_box.reorder_child_after(&l.grip, none);
+        }
+        // The window's column: first child at the top, last at the foot.
+        if let Some(column) = l.root.parent().and_downcast::<gtk::Box>() {
+            if top {
+                column.reorder_child_after(&l.root, none);
+            } else if let Some(last) = column.last_child().filter(|w| w != l.root.upcast_ref::<gtk::Widget>()) {
+                column.reorder_child_after(&l.root, Some(&last));
+            }
+        }
+    }
+
     fn handle(&mut self, msg: NotifyInput, sender: &ComponentSender<Self>) {
         match msg {
             NotifyInput::Push {
@@ -530,6 +686,7 @@ impl NotificationCenter {
                     });
                 } else {
                     self.console_open = true;
+                    self.follow_console();
                     sender.input(NotifyInput::PollConsole);
                 }
             }
@@ -537,10 +694,15 @@ impl NotificationCenter {
             NotifyInput::RevealConsole => {
                 if self.panel_open && !self.console_open {
                     self.console_open = true;
+                    self.follow_console();
                     sender.input(NotifyInput::PollConsole);
                 }
             }
 
+            NotifyInput::SetAtTop(on) => {
+                self.top.set(on);
+                self.place();
+            }
             NotifyInput::SetConsoleEnabled(on) => {
                 self.console_enabled = on;
                 if !on {
@@ -556,30 +718,23 @@ impl NotificationCenter {
                 let (seq, lines) = crate::console_log::lines_since(self.console_seq);
                 self.console_seq = seq;
                 if !lines.is_empty() {
-                    // Follow the tail only while the user is at the bottom;
-                    // scrolling up to read holds the view still.
-                    let follow = self.console_scroll.as_ref().is_none_or(|sw| {
-                        let adj = sw.vadjustment();
-                        adj.value() + adj.page_size() >= adj.upper() - 24.0
-                    });
+                    // The adjustment's changed handler keeps a following
+                    // view on the newest line as these land.
                     let mut end = self.console_buf.end_iter();
                     for line in &lines {
                         self.console_buf.insert(&mut end, line);
                         self.console_buf.insert(&mut end, "\n");
                     }
                     // Keep the widget buffer bounded like the ring buffer.
+                    // Cutting from the top shifts whatever the user scrolled
+                    // up to read, so that waits until they are back at the
+                    // bottom, within a far looser ceiling.
                     let lc = self.console_buf.line_count();
-                    if lc > 2200 {
+                    let cap = if self.console_follow.get() { 2200 } else { 20_000 };
+                    if lc > cap {
                         let mut start = self.console_buf.start_iter();
                         if let Some(mut cut) = self.console_buf.iter_at_line(lc - 2000) {
                             self.console_buf.delete(&mut start, &mut cut);
-                        }
-                    }
-                    if follow {
-                        if let (Some(view), Some(mark)) =
-                            (&self.console_view, self.console_buf.mark("end"))
-                        {
-                            view.scroll_to_mark(&mark, 0.0, true, 0.0, 1.0);
                         }
                     }
                 }

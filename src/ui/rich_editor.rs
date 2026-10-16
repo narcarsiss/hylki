@@ -2,6 +2,7 @@
 //! formatting toolbar. JavaScript runs only in this (our own) document, to drive
 //! editing commands. Used for the compose body and the account signature.
 
+use super::tool_flow::ToolFlow;
 use adw::prelude::*;
 use webkit6::prelude::WebViewExt;
 use crate::i18n::{i18n, i18n_f, i18n_noop};
@@ -16,7 +17,7 @@ pub struct RichEditor {
     webview: webkit6::WebView,
     /// The formatting commands, hidden while a message is composed as plain
     /// text (#180) or as source — the row they sit in stays either way.
-    toolbar_commands: adw::WrapBox,
+    toolbar_commands: ToolFlow,
     /// The far end of that row, where a host puts controls of its own (the
     /// composer's format chooser and preview toggle).
     toolbar_end: gtk::Box,
@@ -29,6 +30,11 @@ pub struct RichEditor {
     /// Which source language the editor currently holds, if it is in source
     /// mode rather than rich mode.
     source: std::rc::Rc<std::cell::Cell<Option<SourceKind>>>,
+    /// Whether the rich document is showing the message as plain text
+    /// (#424): flattened to what is sent, in the monospace font, taking
+    /// only text. Read by every load of the document and by whatever puts
+    /// files or the clipboard into it.
+    plain: std::rc::Rc<std::cell::Cell<bool>>,
     /// Where "Send as Attachment Instead" delivers the lifted image, as a
     /// temp-file path the host adds to its attachment list. Set by the host
     /// via [`RichEditor::connect_send_as_attachment`].
@@ -225,7 +231,8 @@ impl RichEditor {
     /// pictures): opening a reply must not fetch what reading the message
     /// did not (#295). The markup keeps every address, so the recipient
     /// gets the quote whole.
-    pub fn new(initial_html: &str, remote_images: Option<&[String]>) -> Self {
+    pub fn new(initial_html: &str, remote_images: Option<&[String]>, plain: bool) -> Self {
+        let plain = std::rc::Rc::new(std::cell::Cell::new(plain));
         let image_policy: std::rc::Rc<str> = image_policy_meta(remote_images).into();
         // The shared document-viewer context (issue #106): a default-context
         // view would bring up a second web process with browser-sized caches.
@@ -277,8 +284,32 @@ impl RichEditor {
         // pop. Start the view invisible and fade it in when its load
         // finishes — content arrives as a fade into the settled panel.
         webview.set_opacity(0.0);
-        webview.connect_load_changed(|v, ev| {
+        // Starting the editor's web process takes a moment, longest the
+        // first time: past a glance, a spinner says it is coming (#392).
+        let spinner = gtk::Spinner::new();
+        spinner.set_size_request(32, 32);
+        spinner.set_halign(gtk::Align::Center);
+        spinner.set_valign(gtk::Align::Center);
+        spinner.set_can_target(false);
+        spinner.set_visible(false);
+        let shown = std::rc::Rc::new(std::cell::Cell::new(false));
+        {
+            let (sp, shown) = (spinner.downgrade(), shown.clone());
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+                if let Some(sp) = sp.upgrade().filter(|_| !shown.get()) {
+                    sp.set_visible(true);
+                    sp.start();
+                }
+            });
+        }
+        let sp = spinner.downgrade();
+        webview.connect_load_changed(move |v, ev| {
             if ev == webkit6::LoadEvent::Finished {
+                shown.set(true);
+                if let Some(sp) = sp.upgrade() {
+                    sp.stop();
+                    sp.set_visible(false);
+                }
                 fade_in(v);
                 // Focus given before the document was there reached the
                 // view but no caret: place it now.
@@ -291,16 +322,20 @@ impl RichEditor {
         {
             // Failsafe: whatever happens to the load, the editor must never
             // stay invisible.
-            let v = webview.clone();
+            let (v, sp) = (webview.clone(), spinner.downgrade());
             gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(1200), move || {
                 if v.opacity() < 1.0 {
                     fade_in(&v);
+                }
+                if let Some(sp) = sp.upgrade() {
+                    sp.stop();
+                    sp.set_visible(false);
                 }
             });
         }
         crate::web_fonts::load_html(
             &webview,
-            &document(initial_html, &webview, &image_policy),
+            &document(initial_html, &webview, &image_policy, plain.get()),
             Some("https://hylki.localhost/editor"),
         );
         // A live theme flip re-grounds the open document (#148): the scheme
@@ -393,6 +428,7 @@ impl RichEditor {
             std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         {
             let (loaded, pending, cb) = (loaded.clone(), pending_files.clone(), attach_cb.clone());
+            let plain = plain.clone();
             webview.connect_load_changed(move |v, ev| match ev {
                 webkit6::LoadEvent::Started => loaded.set(false),
                 webkit6::LoadEvent::Finished => {
@@ -400,7 +436,7 @@ impl RichEditor {
                     let paths = std::mem::take(&mut *pending.borrow_mut());
                     if !paths.is_empty() {
                         let files: Vec<_> = paths.iter().map(gtk::gio::File::for_path).collect();
-                        deliver_files(v, &files, None, &cb);
+                        deliver_files(v, &files, None, &cb, !plain.get());
                     }
                 }
                 _ => {}
@@ -411,6 +447,7 @@ impl RichEditor {
             std::rc::Rc::new(std::cell::Cell::new(None));
         let menu_attach_cb = attach_cb.clone();
         let menu_history = text_history.clone();
+        let menu_plain = plain.clone();
         let spell_langs_cb: SpellLangsCallback = Default::default();
         let menu_spell_cb = spell_langs_cb.clone();
         webview.connect_context_menu(move |view, menu, hit| {
@@ -435,7 +472,7 @@ impl RichEditor {
                 // lifts it declines non-embedded (remote) images itself,
                 // since the hit test doesn't surface data: URIs to check
                 // against here.
-                let action = gtk::gio::SimpleAction::new("vireo-img-attach", None);
+                let action = gtk::gio::SimpleAction::new("hylki-img-attach", None);
                 let v = view.clone();
                 let cb = menu_attach_cb.clone();
                 action.connect_activate(move |_, _| detach_ctx_image(&v, cb.clone()));
@@ -461,7 +498,7 @@ impl RichEditor {
                     (i18n("Original Size"), "original"),
                 ] {
                     let action =
-                        gtk::gio::SimpleAction::new(&format!("vireo-img-{kind}"), None);
+                        gtk::gio::SimpleAction::new(&format!("hylki-img-{kind}"), None);
                     let v = view.clone();
                     action.connect_activate(move |_, _| {
                         exec(&v, &format!("window.__hylkiSetImageSize('{kind}')"));
@@ -473,7 +510,7 @@ impl RichEditor {
                     at += 1;
                 }
                 {
-                    let action = gtk::gio::SimpleAction::new("vireo-img-fit", None);
+                    let action = gtk::gio::SimpleAction::new("hylki-img-fit", None);
                     let v = view.clone();
                     let hint = js_escape(&i18n(
                         "Will be recompressed to the size shown when this is sent",
@@ -515,12 +552,18 @@ impl RichEditor {
                 menu.remove(item);
             }
             let mut at = pos as i32;
+            // Plain text has no formatting to keep, so it offers only the
+            // paste it does.
+            let plain = menu_plain.get();
             for (label, rich) in [(i18n("Paste with Formatting"), true), (i18n("Paste as Plain Text"), false)] {
+                if rich && plain {
+                    continue;
+                }
                 let action =
-                    gtk::gio::SimpleAction::new(if rich { "vireo-paste-rich" } else { "vireo-paste-plain" }, None);
+                    gtk::gio::SimpleAction::new(if rich { "hylki-paste-rich" } else { "hylki-paste-plain" }, None);
                 let v = view.clone();
                 let cb = menu_attach_cb.clone();
-                action.connect_activate(move |_, _| paste_into(&v, rich, &cb));
+                action.connect_activate(move |_, _| paste_into(&v, rich, &cb, plain));
                 menu.insert(&webkit6::ContextMenuItem::from_gaction(&action, &label, None), at);
                 at += 1;
             }
@@ -533,8 +576,8 @@ impl RichEditor {
             if !hit.context_is_image() {
                 let (can_undo, can_redo) = menu_history.get();
                 for (label, name, redo, on) in [
-                    (i18n("Undo"), "vireo-undo", false, can_undo),
-                    (i18n("Redo"), "vireo-redo", true, can_redo),
+                    (i18n("Undo"), "hylki-undo", false, can_undo),
+                    (i18n("Redo"), "hylki-redo", true, can_redo),
                 ] {
                     let action = gtk::gio::SimpleAction::new(name, None);
                     action.set_enabled(on);
@@ -569,6 +612,7 @@ impl RichEditor {
             let weak = webview.downgrade();
             let cb = attach_cb.clone();
             let src = source.clone();
+            let plain = plain.clone();
             drop.connect_drop(move |_, value, x, y| {
                 let Some(v) = weak.upgrade() else { return false };
                 let Ok(list) = value.get::<gtk::gdk::FileList>() else { return false };
@@ -578,7 +622,7 @@ impl RichEditor {
                 if src.get().is_some() {
                     return attach_all(&list.files(), &cb);
                 }
-                deliver_files(&v, &list.files(), Some((x, y)), &cb)
+                deliver_files(&v, &list.files(), Some((x, y)), &cb, !plain.get())
             });
             webview.add_controller(drop);
         }
@@ -588,7 +632,10 @@ impl RichEditor {
         // rebuilt — which would cost the undo history and the caret.
         let stack = gtk::Stack::new();
         stack.set_vexpand(true);
-        stack.add_named(&webview, Some("edit"));
+        let edit = gtk::Overlay::new();
+        edit.set_child(Some(&webview));
+        edit.add_overlay(&spinner);
+        stack.add_named(&edit, Some("edit"));
 
         let expanded = crate::config::load_privacy().toolbar_expanded;
         let (toolbar, toolbar_commands, toolbar_end, bar_state) = build_toolbar(&webview, &stack, &attach_cb, expanded);
@@ -606,6 +653,9 @@ impl RichEditor {
         // Same card treatment as the address fields' boxed-list: shadow and
         // radius from libadwaita, with the WebView clipped to the corners.
         frame.add_css_class("card");
+        // Found by name when a sent reply's editor turns into its card in
+        // the conversation (send_morph.rs).
+        frame.add_css_class("compose-editor-card");
         frame.set_overflow(gtk::Overflow::Hidden);
         frame.set_child(Some(&stack));
 
@@ -646,6 +696,7 @@ impl RichEditor {
             stack,
             preview: std::rc::Rc::new(std::cell::RefCell::new(None)),
             source: source.clone(),
+            plain,
             attach_cb,
             loaded,
             pending_files,
@@ -707,13 +758,14 @@ impl RichEditor {
         *self.attach_cb.borrow_mut() = Some(Box::new(f));
     }
 
-    /// Replace the editor contents with `content` (HTML), in rich mode.
+    /// Replace the editor contents with `content` (HTML), in rich mode, or
+    /// flattened to plain text when [`RichEditor::set_plain`] says so.
     pub fn set_html(&self, content: &str) {
         self.source.set(None);
         self.show_preview(None);
         crate::web_fonts::load_html(
             &self.webview,
-            &document(content, &self.webview, &self.image_policy),
+            &document(content, &self.webview, &self.image_policy, self.plain.get()),
             Some("https://hylki.localhost/editor"),
         );
     }
@@ -729,6 +781,13 @@ impl RichEditor {
             &source_document(text, &self.webview),
             Some("https://hylki.localhost/editor"),
         );
+    }
+
+    /// Show the message as plain text from the next [`RichEditor::set_html`]
+    /// on: the document flattens itself to the text that is sent, in the
+    /// monospace font, and pastes and drops bring in text alone (#424).
+    pub fn set_plain(&self, on: bool) {
+        self.plain.set(on);
     }
 
     /// The source language the editor is in, or `None` in rich mode.
@@ -829,11 +888,11 @@ impl RichEditor {
             return;
         }
         let files: Vec<_> = paths.iter().map(gtk::gio::File::for_path).collect();
-        deliver_files(&self.webview, &files, None, &self.attach_cb);
+        deliver_files(&self.webview, &files, None, &self.attach_cb, !self.plain.get());
     }
 
     pub fn paste(&self, rich: bool) {
-        paste_into(&self.webview, rich, &self.attach_cb);
+        paste_into(&self.webview, rich, &self.attach_cb, self.plain.get());
     }
 
     /// Whether the body has been edited since it was loaded (async read of a JS
@@ -855,10 +914,17 @@ impl RichEditor {
     /// end — a chooser that vanished with the buttons would be the one
     /// control needed to get them back.
     pub fn set_formatting_visible(&self, on: bool) {
-        self.toolbar_commands.set_visible(on);
+        self.toolbar_commands.set_tools_shown(on);
     }
 
     /// The far end of the formatting row, for a host's own controls.
+    /// Keep the text area at least `height` pixels tall, whatever the
+    /// toolbar above it takes: a host with a fixed-size slot would
+    /// otherwise lose text to a wrapped or expanded toolbar.
+    pub fn set_text_height(&self, height: i32) {
+        self.stack.set_height_request(height);
+    }
+
     pub fn toolbar_end(&self) -> &gtk::Box {
         &self.toolbar_end
     }
@@ -1017,7 +1083,7 @@ fn fade_in(webview: &webkit6::WebView) {
     anim.set_easing(adw::Easing::EaseOutCubic);
     anim.play();
     unsafe {
-        webview.set_data("vireo-fade-anim", anim);
+        webview.set_data("hylki-fade-anim", anim);
     }
 }
 
@@ -1112,6 +1178,7 @@ fn paste_into(
     webview: &webkit6::WebView,
     rich: bool,
     cb: &std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(std::path::PathBuf)>>>>,
+    plain: bool,
 ) {
     if webview.clipboard().formats().contains_type(gtk::gdk::FileList::static_type()) {
         let v = webview.clone();
@@ -1124,7 +1191,7 @@ fn paste_into(
                 let taken = res
                     .ok()
                     .and_then(|val| val.get::<gtk::gdk::FileList>().ok())
-                    .is_some_and(|list| deliver_files(&v, &list.files(), None, &cb));
+                    .is_some_and(|list| deliver_files(&v, &list.files(), None, &cb, !plain));
                 // Nothing usable on the clipboard after all: the ordinary
                 // paste still owes the user whatever else is on it.
                 if !taken {
@@ -1152,7 +1219,8 @@ fn paste_via_webkit(webview: &webkit6::WebView, rich: bool) {
 /// Images inline, everything else attached. `at` is the drop point in widget
 /// coordinates (which are the document's viewport coordinates), placing the
 /// caret where the picture was let go; a paste keeps the caret it has.
-/// Returns whether any file was taken, so a caller can fall back.
+/// Returns whether any file was taken, so a caller can fall back. With
+/// `inline` off (a message written as plain text) every file is attached.
 ///
 /// Reading and encoding happen here rather than in the document because the
 /// document is never given the file in the first place — see [`paste_into`].
@@ -1161,7 +1229,11 @@ fn deliver_files(
     files: &[gtk::gio::File],
     at: Option<(f64, f64)>,
     cb: &std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(std::path::PathBuf)>>>>,
+    inline: bool,
 ) -> bool {
+    if !inline {
+        return attach_all(files, cb);
+    }
     let mut took = false;
     let mut point = at;
     for file in files {
@@ -1328,7 +1400,7 @@ const FONTS: &[(&str, &str, &str)] = &[
 ];
 
 /// The font sizes (#358), in points, the unit mail programs show.
-const SIZES: &[u32] = &[8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36];
+pub(crate) const SIZES: &[u32] = &[8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36];
 
 /// The color palette (#358): the GNOME palette, a column per hue from light
 /// to dark, then the greys from white to black.
@@ -1369,10 +1441,16 @@ fn run_restored(webview: &gtk::glib::WeakRef<webkit6::WebView>, js: &str) {
 }
 
 /// A menu of the bar. Opening it keeps the caret, which the popover's own
-/// focus would otherwise cost the document.
+/// focus would otherwise cost the document. Its content scrolls, so that
+/// [`fit_menu`] can keep it to the room there is.
 fn bar_menu(webview: &webkit6::WebView, tip: &str, content: &impl IsA<gtk::Widget>) -> (gtk::MenuButton, gtk::Popover) {
+    let scroller = gtk::ScrolledWindow::new();
+    scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
+    scroller.set_propagate_natural_width(true);
+    scroller.set_propagate_natural_height(true);
+    scroller.set_child(Some(content));
     let popover = gtk::Popover::new();
-    popover.set_child(Some(content));
+    popover.set_child(Some(&scroller));
     popover.add_css_class("menu");
     let weak = webview.downgrade();
     popover.connect_show(move |_| {
@@ -1385,7 +1463,189 @@ fn bar_menu(webview: &webkit6::WebView, tip: &str, content: &impl IsA<gtk::Widge
     btn.set_tooltip_text(Some(i18n(tip).as_str()));
     btn.set_can_focus(false);
     btn.add_css_class("flat");
+    btn.set_create_popup_func(fit_menu);
     (btn, popover)
+}
+
+/// Keep a bar menu to the room above or below its button, whichever is
+/// larger, scrolling past that. A popover taller than the room there is
+/// never opened at all (#358): the font menu, with its recent fonts, did
+/// not open from a composer near the foot of the screen.
+fn fit_menu(btn: &gtk::MenuButton) {
+    let Some(scroller) = btn.popover().and_then(|p| p.child()).and_downcast::<gtk::ScrolledWindow>() else {
+        return;
+    };
+    let Some(root) = btn.root() else { return };
+    let root = root.upcast_ref::<gtk::Widget>();
+    let Some(at) = btn.compute_point(root, &gtk::graphene::Point::new(0.0, 0.0)) else {
+        return;
+    };
+    let above = at.y() as i32;
+    let below = root.height() - above - btn.height();
+    // The popover's arrow, frame and padding, and a margin from the edge.
+    scroller.set_max_content_height((above.max(below) - 40).max(120));
+}
+
+/// The font dialog's pick, or `None` when it is cancelled. Not the
+/// binding's own `choose_family`: GTK answers a dialog accepted with no row
+/// selected with no family and no error, which the binding takes for a
+/// family and aborts on (#358).
+pub(crate) fn choose_family(parent: Option<&gtk::Window>, done: impl FnOnce(Option<gtk::pango::FontFamily>) + 'static) {
+    use gtk::glib::translate::{from_glib_full, ToGlibPtr};
+    type Done = Box<dyn FnOnce(Option<gtk::pango::FontFamily>)>;
+    unsafe extern "C" fn finish(
+        source: *mut gtk::glib::gobject_ffi::GObject,
+        result: *mut gtk::gio::ffi::GAsyncResult,
+        data: gtk::glib::ffi::gpointer,
+    ) {
+        let done = unsafe { Box::from_raw(data as *mut Done) };
+        let mut error = std::ptr::null_mut();
+        let family = unsafe {
+            gtk::ffi::gtk_font_dialog_choose_family_finish(source as *mut gtk::ffi::GtkFontDialog, result, &mut error)
+        };
+        if !error.is_null() {
+            unsafe { gtk::glib::ffi::g_error_free(error) };
+        }
+        done((!family.is_null()).then(|| unsafe { from_glib_full(family) }));
+    }
+    let dialog = gtk::FontDialog::new();
+    let data: Box<Done> = Box::new(Box::new(done));
+    // The task GTK makes holds the dialog until `finish` has run.
+    unsafe {
+        gtk::ffi::gtk_font_dialog_choose_family(
+            dialog.to_glib_none().0,
+            parent.to_glib_none().0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            Some(finish),
+            Box::into_raw(data) as gtk::glib::ffi::gpointer,
+        );
+    }
+}
+
+/// `font` as a CSS family list, with the generic family it falls back to
+/// where the recipient does not have it.
+pub(crate) fn recent_font_css(font: &crate::config::RecentFont) -> String {
+    let name: String = font.name.chars().filter(|c| !matches!(c, '\'' | '"' | '\\')).collect();
+    let generic = if font.mono { "monospace" } else { "sans-serif" };
+    format!("'{name}', {generic}")
+}
+
+/// The editor command that sets `font`.
+fn font_js(font: &crate::config::RecentFont) -> String {
+    format!("window.__hylkiStyled('fontName',{})", js_str(&recent_font_css(font)))
+}
+
+/// The fonts Settings → Composing offers for new messages, as (CSS family
+/// list, name) pairs: the default, the font menu's own, the recent picks,
+/// and `current` when it is none of those.
+pub(crate) fn compose_font_choices(current: &str) -> Vec<(String, String)> {
+    let mut out = vec![(String::new(), i18n("Default"))];
+    out.extend(FONTS.iter().map(|(_, css, name)| (css.to_string(), i18n(name))));
+    let recent = crate::config::load_recent_fonts();
+    for css in recent.iter().map(recent_font_css).chain((!current.is_empty()).then(|| current.to_string())) {
+        if !out.iter().any(|(c, _)| c.eq_ignore_ascii_case(&css)) {
+            let name = first_family(&css).to_string();
+            out.push((css, name));
+        }
+    }
+    out
+}
+
+/// A CSS family list's first family, unquoted.
+fn first_family(css: &str) -> &str {
+    css.split(',').next().unwrap_or("").trim().trim_matches(|c| c == '\'' || c == '"')
+}
+
+/// A family list from the settings file made safe to write into a style
+/// sheet or a `style` attribute.
+fn clean_family(css: &str) -> String {
+    css.chars().filter(|c| !matches!(c, '"' | '<' | '>' | '{' | '}' | ';' | '\\' | '&') && !c.is_control()).collect::<String>().trim().to_string()
+}
+
+/// The editor's own font, which the signature and the quoted original
+/// keep whatever font new messages are set to.
+const EDITOR_FONT: &str = "14px/1.55 system-ui,sans-serif";
+
+/// The body's `font` shorthand: the font and size set for new messages,
+/// or the editor's own.
+fn body_font() -> String {
+    let prefs = crate::config::load_privacy();
+    let family = clean_family(&prefs.compose_font);
+    if family.is_empty() && prefs.compose_font_size == 0 {
+        return EDITOR_FONT.to_string();
+    }
+    let family = if family.is_empty() { "system-ui,sans-serif".to_string() } else { family };
+    let size = match prefs.compose_font_size {
+        0 => "14px".to_string(),
+        pt => format!("{pt}pt"),
+    };
+    format!("{size}/1.55 {family}")
+}
+
+/// The `style` the sent message's own writing is wrapped in, for the font
+/// and size set for new messages: the editor's style sheet does not go out
+/// with the message. Empty with neither set, leaving the recipient's font.
+fn font_style(family: &str, pt: u32) -> String {
+    let family = clean_family(family);
+    let mut style = String::new();
+    if !family.is_empty() {
+        style.push_str(&format!("font-family:{family};"));
+    }
+    if pt > 0 {
+        style.push_str(&format!("font-size:{pt}pt;"));
+    }
+    style
+}
+
+/// Draw a font menu item in the font it names (a CSS family list), so the
+/// menu shows each font rather than naming it. A font not installed here
+/// shows in the fallback the message itself would get.
+pub(crate) fn preview_font(label: &gtk::Label, family: &str) {
+    let family = family
+        .split(',')
+        .map(|f| f.trim().trim_matches(|c| c == '\'' || c == '"'))
+        .collect::<Vec<_>>()
+        .join(",");
+    let attrs = gtk::pango::AttrList::new();
+    attrs.insert(gtk::pango::AttrString::new_family(&family));
+    label.set_attributes(Some(&attrs));
+}
+
+/// The recent fonts at the foot of the font menu: a divider and one item
+/// per font, the one picked going back to the head of the list.
+fn fill_recent_fonts(
+    list: &gtk::Box,
+    webview: &gtk::glib::WeakRef<webkit6::WebView>,
+    popover: &gtk::glib::WeakRef<gtk::Popover>,
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    let fonts = crate::config::load_recent_fonts();
+    list.set_visible(!fonts.is_empty());
+    if fonts.is_empty() {
+        return;
+    }
+    list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    for font in fonts {
+        let text = gtk::Label::new(Some(&font.name));
+        text.set_xalign(0.0);
+        preview_font(&text, &font.name);
+        let item = gtk::Button::new();
+        item.set_child(Some(&text));
+        item.add_css_class("flat");
+        item.add_css_class("context-menu-item");
+        let (weak, pop) = (webview.clone(), popover.clone());
+        item.connect_clicked(move |_| {
+            if let Some(p) = pop.upgrade() {
+                p.popdown();
+            }
+            run_restored(&weak, &font_js(&font));
+            crate::config::note_recent_font(font.clone());
+        });
+        list.append(&item);
+    }
 }
 
 /// A list of menu items, each running its command in the editor.
@@ -1400,6 +1660,7 @@ fn menu_items(webview: &webkit6::WebView, popover: &gtk::glib::WeakRef<gtk::Popo
         let item = gtk::Button::new();
         item.set_child(Some(&text));
         item.add_css_class("flat");
+        item.add_css_class("context-menu-item");
         let (weak, pop, js) = (webview.downgrade(), popover.clone(), js.clone());
         item.connect_clicked(move |_| {
             if let Some(p) = pop.upgrade() {
@@ -1568,25 +1829,24 @@ fn build_toolbar(
     anchor: &gtk::Stack,
     attach_cb: &std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(std::path::PathBuf)>>>>,
     expanded: bool,
-) -> (gtk::Box, adw::WrapBox, gtk::Box, ToolbarState) {
-    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-    bar.add_css_class("toolbar");
-    bar.add_css_class("format-bar");
-    // The formatting commands sit in a group of their own, so a host can
+) -> (ToolFlow, ToolFlow, gtk::Box, ToolbarState) {
+    // The formatting commands flow and wrap across the bar, and a host can
     // hide them (a message written as source has no use for them) while the
-    // row itself stays — the format chooser lives at its far end.
-    let group = adw::WrapBox::new();
-    group.set_child_spacing(10);
-    group.set_line_spacing(2);
+    // bar itself stays: the format chooser holds its top right corner, and
+    // only the first row stops short of it.
+    let group = ToolFlow::new();
+    group.add_css_class("toolbar");
+    group.add_css_class("format-bar");
     group.set_hexpand(true);
-    // The end box expands too, so it stays at the right when the commands
-    // are hidden (a source format); the group still gets its natural width
-    // first.
     let end = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-    end.set_hexpand(true);
-    end.set_halign(gtk::Align::End);
-    end.set_valign(gtk::Align::Start);
-    let cluster = || gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    // Each group of tools wraps too, so a composer narrower than a group
+    // still takes its buttons one by one rather than growing past its pane.
+    let cluster = || {
+        let c = adw::WrapBox::new();
+        c.set_child_spacing(2);
+        c.set_line_spacing(2);
+        c
+    };
 
     // Paragraph style and font, each a menu whose label follows the caret.
     let styles = cluster();
@@ -1604,20 +1864,28 @@ fn build_toolbar(
         })
         .collect();
     let style_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    style_box.add_css_class("context-menu-list");
     let (style, style_pop) = bar_menu(webview, i18n_noop("Paragraph style"), &style_box);
     style_box.append(&menu_items(webview, &style_pop.downgrade(), &style_items));
     style.set_label(&i18n(BLOCK_STYLES[0].1));
     style.set_always_show_arrow(true);
     let font_items: Vec<(String, String, Option<&str>)> = FONTS
         .iter()
-        .map(|(_, family, label)| {
-            let class = (*family == "monospace").then_some("monospace");
-            (i18n(label), format!("window.__hylkiStyled('fontName',{})", js_str(family)), class)
-        })
+        .map(|(_, family, label)| (i18n(label), format!("window.__hylkiStyled('fontName',{})", js_str(family)), None))
         .collect();
     let font_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    font_box.add_css_class("context-menu-list");
     let (font, font_pop) = bar_menu(webview, i18n_noop("Font"), &font_box);
-    font_box.append(&menu_items(webview, &font_pop.downgrade(), &font_items));
+    let font_list = menu_items(webview, &font_pop.downgrade(), &font_items);
+    let mut item = font_list.first_child();
+    for (_, family, _) in FONTS {
+        let Some(button) = item else { break };
+        if let Some(label) = button.downcast_ref::<gtk::Button>().and_then(|b| b.child()).and_downcast::<gtk::Label>() {
+            preview_font(&label, family);
+        }
+        item = button.next_sibling();
+    }
+    font_box.append(&font_list);
     // Any installed font. The recipient may not have it, so the family's
     // generic kind follows it.
     let other_font = gtk::Button::new();
@@ -1625,6 +1893,7 @@ fn build_toolbar(
     other_label.set_xalign(0.0);
     other_font.set_child(Some(&other_label));
     other_font.add_css_class("flat");
+    other_font.add_css_class("context-menu-item");
     {
         let (weak, pop) = (webview.downgrade(), font_pop.downgrade());
         other_font.connect_clicked(move |b| {
@@ -1633,40 +1902,51 @@ fn build_toolbar(
             }
             let parent = b.root().and_downcast::<gtk::Window>();
             let weak = weak.clone();
-            gtk::FontDialog::new().choose_family(
-                parent.as_ref(),
-                None::<&gtk::pango::FontFamily>,
-                None::<&gtk::gio::Cancellable>,
-                move |res| match res {
-                    Ok(family) => {
-                        let name: String = family.name().chars().filter(|c| !matches!(c, '\'' | '"' | '\\')).collect();
-                        let generic = if family.is_monospace() { "monospace" } else { "sans-serif" };
-                        let value = format!("'{name}', {generic}");
-                        run_restored(&weak, &format!("window.__hylkiStyled('fontName',{})", js_str(&value)));
-                    }
-                    Err(_) => run_restored(&weak, ""),
-                },
-            );
+            choose_family(parent.as_ref(), move |family| match family {
+                Some(family) => {
+                    let font = crate::config::RecentFont { name: family.name().to_string(), mono: family.is_monospace() };
+                    run_restored(&weak, &font_js(&font));
+                    crate::config::note_recent_font(font);
+                }
+                None => run_restored(&weak, ""),
+            });
         });
     }
     font_box.append(&other_font);
-    font.set_label(&i18n(FONTS[0].2));
+    // The fonts picked there last (#358), at the foot of the menu, read
+    // afresh each time it opens so that every composer offers the same.
+    let recent_fonts = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    {
+        let (weak, pop, recent) = (webview.downgrade(), font_pop.downgrade(), recent_fonts.clone());
+        font.set_create_popup_func(move |btn| {
+            fill_recent_fonts(&recent, &weak, &pop);
+            fit_menu(btn);
+        });
+    }
+    font_box.append(&recent_fonts);
+    let prefs = crate::config::load_privacy();
+    font.set_label(&font_label(first_family(&prefs.compose_font)));
     font.set_always_show_arrow(true);
     let size_items: Vec<(String, String, Option<&str>)> = std::iter::once((i18n("Default"), "window.__hylkiSize(0)".to_string(), None))
         .chain(SIZES.iter().map(|pt| (pt.to_string(), format!("window.__hylkiSize({pt})"), None)))
         .collect();
     let size_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    size_box.add_css_class("context-menu-list");
     let (size, size_pop) = bar_menu(webview, i18n_noop("Font size"), &size_box);
     size_box.append(&menu_items(webview, &size_pop.downgrade(), &size_items));
-    // The editor's own 14px, until the caret reports.
-    size.set_label("11");
+    // The size new messages start in (the editor's own 14px by default),
+    // until the caret reports.
+    size.set_label(&match prefs.compose_font_size {
+        0 => "11".to_string(),
+        pt => pt.to_string(),
+    });
     size.set_always_show_arrow(true);
     styles.append(&style);
     styles.append(&font);
     styles.append(&size);
 
     // (icon, tooltip, execCommand snippet).
-    let simple = |cluster: &gtk::Box, commands: &[(&str, &str, &str)]| {
+    let simple = |cluster: &adw::WrapBox, commands: &[(&str, &str, &str)]| {
         for (icon, tip, cmd) in commands {
             let btn = bar_button(icon, tip);
             // Weak: the format-state handler the view's content manager
@@ -1794,7 +2074,12 @@ fn build_toolbar(
     // their end, and slide back into it. Settings → Composing → Formatting
     // toolbar says how a new message starts; the chevron changes it for
     // this one.
-    let extras = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    // A wrapping box, so in a narrow composer the groups take further rows
+    // one by one rather than holding the toolbar, and the window, wider
+    // than the pane.
+    let extras = adw::WrapBox::new();
+    extras.set_child_spacing(10);
+    extras.set_line_spacing(2);
     for e in [&styles, &colors, &indents, &media] {
         extras.append(e);
     }
@@ -1832,8 +2117,7 @@ fn build_toolbar(
             // The room left on the row after Clear formatting, against what
             // the tools and the chevron need.
             let gap = 10.0;
-            let row_end = tail.compute_bounds(&group).map_or(0.0, |r| r.x() + r.width());
-            let spare = group.width() as f32 - row_end - gap;
+            let spare = group.room_after(tail.upcast_ref()).unwrap_or(0) as f32;
             let need = extras.measure(gtk::Orientation::Horizontal, -1).1 as f32 + gap + b.width() as f32;
             if reveal.transition_duration() > 0 && group.width() > 0 && need > spare {
                 breaker.set_size_request((spare - 1.0).max(0.0) as i32, -1);
@@ -1852,9 +2136,17 @@ fn build_toolbar(
     reveal.set_visible(expanded);
     reveal.set_transition_duration(250);
     more.connect_toggled(show_more);
+    // The chevron rides with the tools it shows, wrapping under them only
+    // when the row truly has no room. A wrapping box of its own keeps the
+    // toolbar's narrowest width that of the tools alone: a plain box would
+    // add the chevron to it and push a narrow composer past its pane.
+    let ride = adw::WrapBox::new();
+    ride.set_child_spacing(10);
+    ride.set_line_spacing(2);
+    ride.append(&reveal);
+    ride.append(&more);
     group.append(&breaker);
-    group.append(&reveal);
-    group.append(&more);
+    group.append(&ride);
     // HYLKI_SHOWCASE_TOOLBAR_TOGGLE=<ms>: press the chevron that long after
     // the bar is built, so frames of the slide can be captured.
     if let Some(ms) = std::env::var("HYLKI_SHOWCASE_TOOLBAR_TOGGLE").ok().and_then(|v| v.parse::<u64>().ok()) {
@@ -1881,9 +2173,8 @@ fn build_toolbar(
         });
     }
 
-    bar.append(&group);
-    bar.append(&end);
-    (bar, group, end, ToolbarState { toggles, style, font, size })
+    group.set_end(&end);
+    (group.clone(), group, end, ToolbarState { toggles, style, font, size })
 }
 
 /// Choose pictures to put in the message at the caret (#358), the way a
@@ -1910,7 +2201,7 @@ fn pick_pictures(
             .filter_map(|i| list.item(i).and_downcast::<gtk::gio::File>())
             .collect();
         exec(&wv, "window.__hylkiRestore&&window.__hylkiRestore()");
-        deliver_files(&wv, &files, None, &cb);
+        deliver_files(&wv, &files, None, &cb, true);
         wv.grab_focus();
     });
 }
@@ -2173,7 +2464,7 @@ const PASTE_SCRIPT: &str = r#"<script>
   var spellT = null, composing = false, spellRange = null;
   var spellHl = (window.Highlight && window.CSS && CSS.highlights)
     ? new Highlight() : null;
-  if(spellHl) CSS.highlights.set('vireo-misspell', spellHl);
+  if(spellHl) CSS.highlights.set('hylki-misspell', spellHl);
   function caretWord(){
     var sel = getSelection();
     if(!sel.rangeCount || !sel.isCollapsed) return null;
@@ -2216,24 +2507,48 @@ const PASTE_SCRIPT: &str = r#"<script>
     }
     return b;
   }
-  /* The caret's font (#358): the first family of the nearest font set on
-     the way up to the body, or else the generic family the editor's own
-     falls under. */
-  function fontOf(el){
-    for(var e = el; e && e !== document.body && e.nodeType === 1; e = e.parentElement){
-      var f = (e.style && e.style.fontFamily) || (e.tagName === 'FONT' && e.getAttribute('face')) || '';
-      if(f) return f.split(',')[0].replace(/["']/g, '').trim();
+  /* The element the font and size menus describe: the caret's, or with a
+     selection the first selected character's. The anchor would not do: a
+     font applied to a selection leaves it at the end of the text before
+     the new span, and the menu went on naming the old font (#358). */
+  function styledEl(){
+    var sel = getSelection();
+    if(sel.rangeCount && !sel.isCollapsed){
+      var r = sel.getRangeAt(0), root = r.commonAncestorContainer;
+      if(root.nodeType === 3) return root.parentNode;
+      var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for(var t = w.nextNode(); t; t = w.nextNode()){
+        if(!r.intersectsNode(t) || !t.nodeValue.trim()) continue;
+        if(t === r.startContainer && r.startOffset >= t.length) continue;
+        return t.parentNode;
+      }
     }
-    var g = '';
-    try{ g = getComputedStyle(el).fontFamily.toLowerCase(); }catch(_){}
+    var el = caretBlock();
+    return el && el.nodeType === 1 ? el : document.body;
+  }
+  /* The caret's font (#358): its first family, or the generic family the
+     editor's own falls under. A font chosen for the next character typed
+     comes first, then WebKit's own value, which the selection's anchor
+     could not stand in for. */
+  function fontOf(el){
+    var g = pending && pending.fontFamily || '';
+    if(!g) try{ g = String(document.queryCommandValue('fontName') || ''); }catch(_){}
+    if(!g){ try{ g = getComputedStyle(el).fontFamily; }catch(_){} }
+    var first = g.split(',')[0].replace(/["']/g, '').trim();
+    if(first && !/^(system-ui|sans-serif|serif|monospace|ui-[a-z-]+|-webkit-[a-z-]+)$/i.test(first)) return first;
+    g = g.toLowerCase();
     if(/mono/.test(g)) return 'monospace';
     if(/(^|,)\s*"?serif/.test(g) || (/serif/.test(g) && !/sans/.test(g))) return 'serif';
     return 'sans-serif';
   }
-  /* The caret's text size in points, the unit the size menu shows. */
+  /* The caret's text size in points, the unit the size menu shows: a size
+     chosen for the next character typed, or the text's own. */
   function sizeOf(el){
+    var want = pending && pending.fontSize || '';
     var px = 0;
-    try{ px = parseFloat(getComputedStyle(el).fontSize); }catch(_){}
+    if(/pt$/.test(want)) return String(parseFloat(want));
+    if(want) px = parseFloat(want);
+    else try{ px = parseFloat(getComputedStyle(el).fontSize); }catch(_){}
     // A view not laid out yet reports nonsense; the label keeps what it had.
     return px >= 4 ? String(Math.round(px * 0.75)) : '';
   }
@@ -2246,7 +2561,7 @@ const PASTE_SCRIPT: &str = r#"<script>
       ol = document.queryCommandState('insertOrderedList');
       block = String(document.queryCommandValue('formatBlock') || '').toLowerCase();
     }catch(_){}
-    var at = el && el.nodeType === 1 ? el : document.body;
+    var at = styledEl();
     var s = (q ? 'q' : '') + (ul ? 'u' : '') + (ol ? 'o' : '')
       + '|' + block + '|' + fontOf(at) + '|' + sizeOf(at);
     if(s === lastFmt) return;
@@ -2291,18 +2606,32 @@ const PASTE_SCRIPT: &str = r#"<script>
      keeps; WebKit's own markup is a <font> tag otherwise. Only for these
      commands: Bold and the rest stay the plain tags Markdown maps. */
   window.__hylkiStyled = function(cmd, value){
+    var sel = getSelection();
+    if(cmd === 'fontName' && sel.rangeCount && sel.isCollapsed){
+      pend('fontFamily', value);
+      return;
+    }
     document.execCommand('styleWithCSS', false, true);
     document.execCommand(cmd, false, value);
     document.execCommand('styleWithCSS', false, false);
     fmtState();
   };
+  /* A font or size chosen with nothing selected (#358) is for the next
+     character typed, which opens a span of it, the way the other styles
+     carry on from the caret. Not WebKit's own typing style, which any
+     change of selection drops: picking a font in the font dialog takes the
+     focus away from the document and back. */
+  var pending = null;
+  function pend(prop, value){
+    pending = pending || {};
+    pending[prop] = value;
+    fmtState();
+  }
   /* Font size (#358) in points. WebKit's own command knows only the seven
      <font size> steps, so the text is marked with the largest, which no
      message written here uses, and the mark turns into the size asked for
-     (a <font> other mail kept as it was is left alone). With nothing
-     selected, the next character typed opens a span of that size, the way
-     the other styles carry on from the caret. 0 is the editor's own size. */
-  var sizeWant = null, sizeNext = false;
+     (a <font> other mail kept as it was is left alone). 0 is the editor's
+     own size. */
   function sizeValue(pt){
     return pt ? pt + 'pt' : getComputedStyle(document.body).fontSize;
   }
@@ -2316,9 +2645,9 @@ const PASTE_SCRIPT: &str = r#"<script>
   window.__hylkiSize = function(pt){
     var sel = getSelection();
     if(!sel.rangeCount) return;
-    sizeWant = sizeValue(pt);
+    var sizeWant = sizeValue(pt);
     if(sel.isCollapsed){
-      sizeNext = true;
+      pend('fontSize', sizeWant);
       return;
     }
     var before = new Set(document.body.querySelectorAll('font[size="7"]'));
@@ -2333,13 +2662,15 @@ const PASTE_SCRIPT: &str = r#"<script>
     fmtState();
   };
   document.addEventListener('beforeinput', function(e){
-    if(!sizeNext || e.inputType !== 'insertText' || !e.data) return;
-    sizeNext = false;
+    if(!pending || e.inputType !== 'insertText' || !e.data) return;
+    var want = pending;
+    pending = null;
     var sel = getSelection();
     if(!sel.rangeCount || !sel.isCollapsed) return;
     e.preventDefault();
     var span = document.createElement('span');
-    span.style.fontSize = sizeWant;
+    if(want.fontFamily) span.style.fontFamily = want.fontFamily;
+    if(want.fontSize) span.style.fontSize = want.fontSize;
     // A lone space at the end of a line would collapse, and the caret
     // with it out of the span.
     var text = document.createTextNode(e.data === ' ' ? '\u00a0' : e.data);
@@ -2352,10 +2683,16 @@ const PASTE_SCRIPT: &str = r#"<script>
     sel.addRange(r);
     fmtState();
   });
-  /* A size chosen with nothing selected is for the caret where it was. */
-  document.addEventListener('mousedown', function(){ sizeNext = false; });
+  /* A font or size chosen with nothing selected is for the caret where
+     it was. */
+  function unpend(){
+    if(!pending) return;
+    pending = null;
+    fmtState();
+  }
+  document.addEventListener('mousedown', unpend);
   document.addEventListener('keydown', function(e){
-    if(e.key && e.key.indexOf('Arrow') === 0 || e.key === 'Home' || e.key === 'End') sizeNext = false;
+    if(e.key && e.key.indexOf('Arrow') === 0 || e.key === 'Home' || e.key === 'End') unpend();
   });
   /* Indent and outdent (#358). In a list they nest the item under the one
      above, or bring it back out. */
@@ -2443,7 +2780,7 @@ const PASTE_SCRIPT: &str = r#"<script>
   });
   /* Resizing a picture. The frame and its corner handles are ordinary
      elements in this contenteditable document — there is nowhere else to
-     put them — so they are marked `data-vireo-ui` and stripped from
+     put them — so they are marked `data-hylki-ui` and stripped from
      everything the document hands back (see `__hylkiBodyHtml`). They are
      also contenteditable=false, so the caret cannot wander into them. */
   var rsBox = null, rsImg = null;
@@ -2454,7 +2791,7 @@ const PASTE_SCRIPT: &str = r#"<script>
   function rsRemove(){ if(rsBox){ rsBox.remove(); rsBox = null; rsImg = null; } }
   function rsTint(){
     if(!rsBox || !rsImg) return;
-    var c = rsImg.hasAttribute('data-vireo-fit') ? RS_RED : RS_BLUE;
+    var c = rsImg.hasAttribute('data-hylki-fit') ? RS_RED : RS_BLUE;
     rsBox.style.outlineColor = c;
     Array.prototype.forEach.call(rsBox.children, function(h){ h.style.background = c; });
   }
@@ -2502,7 +2839,7 @@ const PASTE_SCRIPT: &str = r#"<script>
     rsRemove();
     rsImg = img;
     rsBox = document.createElement('div');
-    rsBox.setAttribute('data-vireo-ui', 'resize');
+    rsBox.setAttribute('data-hylki-ui', 'resize');
     rsBox.setAttribute('contenteditable', 'false');
     rsBox.style.cssText = 'position:absolute;pointer-events:none;z-index:9;'
       + 'outline:1px solid #3584e4;';
@@ -2546,11 +2883,11 @@ const PASTE_SCRIPT: &str = r#"<script>
   window.__hylkiToggleFit = function(hint){
     var img = window.__hylkiCtxImg || rsImg;
     if(!img) return;
-    if(img.hasAttribute('data-vireo-fit')){
-      img.removeAttribute('data-vireo-fit');
+    if(img.hasAttribute('data-hylki-fit')){
+      img.removeAttribute('data-hylki-fit');
       img.removeAttribute('title');
     } else {
-      img.setAttribute('data-vireo-fit', '1');
+      img.setAttribute('data-hylki-fit', '1');
       img.title = hint;
     }
     if(img === rsImg) rsTint(); else rsShow(img);
@@ -2561,7 +2898,7 @@ const PASTE_SCRIPT: &str = r#"<script>
      alone: there are no extra pixels to be had. */
   function rsFlatten(){
     Array.prototype.forEach.call(
-      document.querySelectorAll('img[data-vireo-fit]'), function(im){
+      document.querySelectorAll('img[data-hylki-fit]'), function(im){
         var w = Math.round(im.getBoundingClientRect().width);
         if(!w || !im.naturalWidth || w >= im.naturalWidth) return;
         try{
@@ -2581,7 +2918,7 @@ const PASTE_SCRIPT: &str = r#"<script>
      draft reopened later still shows it and still honours it when sent. */
   window.__hylkiBodyHtml = function(){
     var c = document.body.cloneNode(true);
-    Array.prototype.forEach.call(c.querySelectorAll('[data-vireo-ui]'),
+    Array.prototype.forEach.call(c.querySelectorAll('[data-hylki-ui]'),
       function(n){ n.remove(); });
     return c.innerHTML;
   };
@@ -2595,13 +2932,15 @@ const PASTE_SCRIPT: &str = r#"<script>
       return pre ? v : v.replace(/[ \t\r\n]+/g, ' ');
     }
     if(node.nodeType !== 1) return '';
-    if(node.hasAttribute('data-vireo-ui')) return '';
+    if(node.hasAttribute('data-hylki-ui')) return '';
     var tag = node.tagName.toLowerCase();
     if(tag === 'br') return '\n';
     if(tag === 'img') return node.getAttribute('alt') || '';
     if(tag === 'style' || tag === 'script') return '';
     var s = '';
-    var inPre = pre || tag === 'pre';
+    /* A quoted plain-text part keeps its spaces under an inline pre-wrap
+       (#436), as <pre> does. */
+    var inPre = pre || tag === 'pre' || /^(pre|break-spaces)/.test(node.style.whiteSpace || '');
     for(var i = 0; i < node.childNodes.length; i++) s += hylkiTxt(node.childNodes[i], inPre);
     if(tag === 'a'){
       var h = node.getAttribute('href') || '';
@@ -2616,24 +2955,168 @@ const PASTE_SCRIPT: &str = r#"<script>
     if(/^(p|div|h[1-6]|pre|tr|ul|ol|table|section|article|header|footer)$/.test(tag)) return '\n' + s + '\n';
     return s;
   }
-  window.__hylkiBodyText = function(){
-    return hylkiTxt(document.body, false)
-      .replace(/[ \t]+\n/g, '\n')
+  /* Trailing blanks go, except the one in a signature's "-- " line, which
+     is how a mail client tells the signature from the message. */
+  function tidyTxt(t){
+    return t.replace(/[ \t]+\n/g, function(m, at, all){
+        var start = all.lastIndexOf('\n', at - 1) + 1;
+        return m === ' \n' && at - start === 2 && all.slice(start, at) === '--' ? m : '\n';
+      })
       .replace(/\n{3,}/g, '\n\n')
       .replace(/^\n+|\n+$/g, '');
+  }
+  /* What is sent has spaces where the editor keeps no-break spaces to
+     show them: a run of them typed, or the indents of a plain-text quote. */
+  window.__hylkiBodyText = function(){
+    return tidyTxt(hylkiTxt(document.body, false).replace(/\u00a0/g, ' '));
   };
+  /* Plain text (#424) shows the message as it is sent: the document is
+     flattened to the text above, the signature and the "wrote:" line
+     keeping their blocks (and classes) so that changing the From, adding a
+     signature or a cloud link finds them as in rich text. A quote becomes
+     its "> " lines. */
+  function plainTextOf(nodes){
+    var d = document.createElement('div');
+    nodes.forEach(function(n){ d.appendChild(n.cloneNode(true)); });
+    return tidyTxt(hylkiTxt(d, false));
+  }
+  /* A line's indent, its runs of spaces and its tabs (to the next stop of
+     eight) as no-break spaces: in a block that wraps they would collapse
+     to one, on screen and in the text read back to send (#436). */
+  function keepSpaces(line){
+    var out = '', col = 0;
+    for(var i = 0; i < line.length; i++){
+      var c = line.charAt(i);
+      if(c === '\t'){
+        var n = 8 - col % 8;
+        for(var k = 0; k < n; k++) out += '\u00a0';
+        col += n;
+        continue;
+      }
+      if(c === ' ' && (i === 0 || /[ \t\u00a0]/.test(line.charAt(i - 1)))) c = '\u00a0';
+      out += c;
+      col++;
+    }
+    return out;
+  }
+  function plainBlock(tag, cls, text){
+    var e = document.createElement(tag);
+    if(cls) e.className = cls;
+    e.innerHTML = text ? text.split('\n').map(function(l){ return esc(keepSpaces(l)); }).join('<br>') : '<br>';
+    return e;
+  }
+  function markOf(n){
+    if(n.nodeType !== 1) return '';
+    if(n.classList.contains('hylki-sig')) return 'hylki-sig';
+    if(n.classList.contains('hylki-quote-attr')) return 'hylki-quote-attr';
+    return '';
+  }
+  /* Whether `el`'s content is text and nothing else: line breaks, blocks
+     with no styling of their own, and (with `quotes`) quotes of the same,
+     which plain text writes as "> " lines. */
+  function plainOk(el, quotes){
+    var keep = quotes ? /^(DIV|P|BR|SPAN|BLOCKQUOTE)$/ : /^(DIV|P|BR|SPAN)$/;
+    var all = [el].concat(Array.prototype.slice.call(el.querySelectorAll('*')));
+    for(var i = 0; i < all.length; i++){
+      var n = all[i];
+      if(n.closest('[data-hylki-ui]')) continue;
+      if(n === document.body) continue;
+      if(!keep.test(n.tagName)) return false;
+      for(var j = 0; j < n.attributes.length; j++){
+        var a = n.attributes[j].name;
+        if(a === 'style'){ if(n.getAttribute('style').trim()) return false; }
+        else if(!/^(class|dir|id|data-.+)$/.test(a)) return false;
+      }
+    }
+    return true;
+  }
+  /* Whether switching to plain text takes anything away: styling,
+     pictures, links, lists. A quote is not lost, only written out. */
+  window.__hylkiPlainLoses = function(){ return !plainOk(document.body, true); };
+  function toPlain(){
+    var b = document.body, segs = [], run = [];
+    var flush = function(){ segs.push(['div', '', plainTextOf(run)]); run = []; };
+    Array.prototype.slice.call(b.childNodes).forEach(function(n){
+      if(n.nodeType === 1 && n.hasAttribute('data-hylki-ui')) return;
+      var mark = markOf(n);
+      if(!mark){ run.push(n); return; }
+      flush();
+      segs.push([n.tagName === 'P' ? 'p' : 'div', mark, plainTextOf([n])]);
+    });
+    flush();
+    var out = document.createDocumentFragment();
+    /* The first block stays even when empty: it is the line a new
+       message or a reply is typed on. */
+    segs.forEach(function(g, i){
+      if(g[2] || i === 0) out.appendChild(plainBlock(g[0], g[1], g[2]));
+    });
+    b.textContent = '';
+    b.appendChild(out);
+  }
+  /* What the composer runs after putting HTML of its own into a plain
+     text body (a signature, a cloud link): any block that is not plain
+     text yet is made so. */
+  window.__hylkiPlainFix = function(){
+    if(!window.__hylkiPlain) return;
+    Array.prototype.slice.call(document.body.children).forEach(function(n){
+      if(n.hasAttribute('data-hylki-ui') || plainOk(n, false)) return;
+      n.replaceWith(plainBlock(n.tagName === 'P' ? 'p' : 'div', markOf(n), plainTextOf([n])));
+    });
+  };
+  if(window.__hylkiPlain){
+    document.addEventListener('DOMContentLoaded', toPlain);
+    /* Bold, italic and underline are WebKit's own keys, not the
+       toolbar's: in plain text they would show what is never sent. */
+    document.addEventListener('keydown', function(e){
+      if((e.ctrlKey || e.metaKey) && !e.altKey && /^[biu]$/i.test(e.key)) e.preventDefault();
+    }, true);
+    document.addEventListener('beforeinput', function(e){
+      if(/^format/.test(e.inputType || '')) e.preventDefault();
+    }, true);
+  }
   /* Sending, and only sending: recut first, then read with the marks taken
      out. A draft is saved through the plain reader above, so quality is
      never lost to a save. */
   window.__hylkiBodyHtmlForSend = function(){
     rsFlatten();
     Array.prototype.forEach.call(
-      document.querySelectorAll('img[data-vireo-fit]'), function(n){
-        n.removeAttribute('data-vireo-fit'); n.removeAttribute('title');
+      document.querySelectorAll('img[data-hylki-fit]'), function(n){
+        n.removeAttribute('data-hylki-fit'); n.removeAttribute('title');
       });
     rsTint();
-    return window.__hylkiBodyHtml();
+    return fontRuns(window.__hylkiBodyHtml());
   };
+  /* The font set for new messages, written around each stretch of what
+     was typed, since the editor's style sheet does not go out with it. The
+     signature and the quoted original (its attribution line and the quote
+     straight after) are left out, as the editor shows them. */
+  function fontRuns(html){
+    var style = window.__hylkiComposeFont;
+    if(!style) return html;
+    var t = document.createElement('template');
+    t.innerHTML = html;
+    var kids = Array.prototype.slice.call(t.content.childNodes);
+    var kept = kids.map(function(n){
+      if(n.nodeType !== 1) return false;
+      if(n.classList.contains('hylki-sig') || n.classList.contains('hylki-quote-attr')) return true;
+      var prev = n.previousElementSibling;
+      return n.tagName === 'BLOCKQUOTE' && !!prev && prev.classList.contains('hylki-quote-attr');
+    });
+    var run = [];
+    function flush(){
+      var typed = run.some(function(n){ return n.nodeType === 1 || /\S/.test(n.nodeValue || ''); });
+      if(typed){
+        var d = document.createElement('div');
+        d.setAttribute('style', style);
+        run[0].parentNode.insertBefore(d, run[0]);
+        run.forEach(function(n){ d.appendChild(n); });
+      }
+      run = [];
+    }
+    kids.forEach(function(n, i){ if(kept[i]) flush(); else run.push(n); });
+    flush();
+    return t.innerHTML;
+  }
   addEventListener('scroll', rsPlace, true);
   addEventListener('resize', rsPlace);
   document.addEventListener('input', rsPlace);
@@ -2706,6 +3189,15 @@ const PASTE_SCRIPT: &str = r#"<script>
   }
   document.addEventListener('paste', function(e){
     var cd = e.clipboardData; if(!cd) return;
+    /* Plain text takes the clipboard's text and nothing else: no
+       formatting, no picture, no link made of an address. */
+    if(window.__hylkiPlain){
+      window.__hylkiPasteOnce = null;
+      e.preventDefault();
+      var t = cd.getData('text/plain');
+      if(t) document.execCommand('insertHTML', false, esc(t).replace(/\r\n|\r|\n/g, '<br>'));
+      return;
+    }
     /* An image on the clipboard beats any text flavour riding along with it,
        and pastes inline whichever paste mode is set. */
     var its = cd.items || [];
@@ -2738,23 +3230,50 @@ const PASTE_SCRIPT: &str = r#"<script>
 /// the theme's own view background (#148), read through `webview`, so a
 /// custom GNOME theme reaches the editor as it does the reader — `Canvas`
 /// would be WebKit's stock shade whatever the theme says.
-fn document(content: &str, webview: &webkit6::WebView, image_policy: &str) -> String {
+///
+/// With `plain` set the document is the plain-text view (#424): it
+/// flattens what it is given to the text that is sent once it has parsed
+/// it, and shows it in the desktop's monospace font. Every block of the
+/// body is a paragraph there, a line's height above the next, because
+/// that is the empty line the sent text has between them.
+fn document(content: &str, webview: &webkit6::WebView, image_policy: &str, plain: bool) -> String {
     let dark = adw::StyleManager::default().is_dark();
     let scheme = if dark { "dark" } else { "light" };
     let (ground, _, _) = crate::ui::message_view::theme_grounds_for(webview, dark);
     let paste_rich = !crate::config::load_privacy().paste_plain;
     let return_paragraph = crate::config::load_privacy().return_paragraph;
+    let body_font = body_font();
+    let prefs = crate::config::load_privacy();
+    let compose_font = js_str(&font_style(&prefs.compose_font, prefs.compose_font_size));
     let script = format!(
         "<script>window.__hylkiPasteRich={paste_rich};\
-         window.__hylkiReturnParagraph={return_paragraph};</script>{PASTE_SCRIPT}{HISTORY_SCRIPT}{EMOJI_SCRIPT}"
+         window.__hylkiComposeFont={compose_font};\
+         window.__hylkiReturnParagraph={return_paragraph};\
+         window.__hylkiPlain={plain};</script>{PASTE_SCRIPT}{HISTORY_SCRIPT}{EMOJI_SCRIPT}"
     );
+    let (plain_attr, plain_css) = if plain {
+        let mono = monospace_family();
+        (
+            " data-plain",
+            format!(
+                "html[data-plain] body{{font:13px/1.6 {mono};}}\
+                 html[data-plain] body *{{font:inherit!important;color:inherit;\
+                   background:transparent;text-decoration:none;opacity:1;\
+                   margin:0;padding:0;border:0;}}\
+                 html[data-plain] body>*{{margin:0 0 1.6em;}}\
+                 html[data-plain] body>*:last-child{{margin-bottom:0;}}"
+            ),
+        )
+    } else {
+        ("", String::new())
+    };
     format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\">\
+        "<!doctype html><html{plain_attr}><head><meta charset=\"utf-8\">\
          <meta name=\"color-scheme\" content=\"{scheme}\">{image_policy}\
          <style>\
            :root{{color-scheme:{scheme};}}\
            html,body{{height:100%;box-sizing:border-box;}}\
-           body{{margin:0;padding:20px;font:14px/1.55 system-ui,sans-serif;outline:none;\
+           body{{margin:0;padding:20px;font:{body_font};outline:none;\
              background:{ground};color:CanvasText;}}\
            /* Every image fits the writing width — pasted, dropped, or\
               quoted. The inline style on inserted images serves the\
@@ -2762,10 +3281,10 @@ fn document(content: &str, webview: &webkit6::WebView, image_policy: &str) -> St
               whatever survives insertHTML. */\
            img{{max-width:100%;height:auto;}}\
            /* A picture armed to be recut when the message is sent. */\
-           img[data-vireo-fit]{{outline:2px dashed #e01b24;outline-offset:2px;}}\
+           img[data-hylki-fit]{{outline:2px dashed #e01b24;outline-offset:2px;}}\
            /* The in-progress word's misspelling mark (Custom Highlight API);\
               the tint backs up engines that skip decorations in highlights. */\
-           ::highlight(vireo-misspell){{\
+           ::highlight(hylki-misspell){{\
              text-decoration:underline wavy #e01b24;\
              background-color:rgba(224,27,36,0.10);}}\
            blockquote{{margin:0;margin-inline-start:8px;padding-inline-start:10px;\
@@ -2776,13 +3295,18 @@ fn document(content: &str, webview: &webkit6::WebView, image_policy: &str) -> St
            /* A paragraph's space goes below it, so the first line of the\
               message sits where it would in a <div>. */\
            body>p:first-child{{margin-top:0;}}\
-           .vireo-quote-attr{{opacity:0.7;margin:10px 0 4px;}}\
+           .hylki-quote-attr{{opacity:0.7;margin:10px 0 4px;}}\
            /* A quoted message that sets its own colors, on the light\
               ground it was designed for. */\
-           blockquote.vireo-quote-mail{{background:#ffffff;color:#1e1e1e;\
+           blockquote.hylki-quote-mail{{background:#ffffff;color:#1e1e1e;\
              color-scheme:light;}}\
-           .vireo-sig{{opacity:0.85;}}\
+           .hylki-sig{{opacity:0.85;}}\
+           /* The font set for new messages is for what is written here:\
+              the signature and the quoted original keep the editor's. */\
+           body>.hylki-sig,body>.hylki-quote-attr,\
+           body>.hylki-quote-attr+blockquote{{font:{EDITOR_FONT};}}\
            a{{color:#3584e4;}}\
+           {plain_css}\
          </style>{script}\
          <script>window.__hylkiDirty=false;\
            document.addEventListener('input',function(){{window.__hylkiDirty=true;}},true);\
@@ -2814,7 +3338,7 @@ fn source_document(text: &str, webview: &webkit6::WebView) -> String {
            textarea{{display:block;width:100%;height:100%;box-sizing:border-box;\
              border:0;outline:none;resize:none;padding:18px 20px;\
              background:{ground};color:CanvasText;\
-             font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;\
+             font:13px/1.6 {mono};\
              tab-size:2;}}\
          </style></head><body>\
          <textarea id=\"src\" dir=\"auto\" spellcheck=\"true\" autocapitalize=\"off\" \
@@ -2838,8 +3362,34 @@ fn source_document(text: &str, webview: &webkit6::WebView) -> String {
            t.focus();t.setSelectionRange(0,0);\
          }})();\
          </script>{HISTORY_SCRIPT}{EMOJI_SCRIPT}</body></html>",
-        text = gtk::glib::markup_escape_text(text)
+        text = gtk::glib::markup_escape_text(text),
+        mono = monospace_family(),
     )
+}
+
+/// The desktop's monospace font as a CSS family list, for the plain-text
+/// and source views: the family picked for terminals and code, with the
+/// generic family behind it. Read once, since asking costs a round trip to
+/// the settings portal.
+fn monospace_family() -> String {
+    static FAMILY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FAMILY
+        .get_or_init(|| css_monospace_family(&crate::desktop::monospace_font()))
+        .clone()
+}
+
+/// A Pango font description's families, quoted, then `monospace`.
+fn css_monospace_family(desc: &str) -> String {
+    let fd = gtk::pango::FontDescription::from_string(desc);
+    let family = fd.family().map(|f| f.to_string()).unwrap_or_default();
+    let mut families: Vec<String> = family
+        .split(',')
+        .map(str::trim)
+        .filter(|f| !f.is_empty() && !f.eq_ignore_ascii_case("monospace"))
+        .map(|f| format!("\"{}\"", f.replace(['\\', '"', '<', '>', '{', '}', ';'], "")))
+        .collect();
+    families.push("monospace".to_string());
+    families.join(",")
 }
 
 /// The preview document: the message as the recipient would see it, on the
@@ -3195,5 +3745,38 @@ mod body_tests {
             ("<p>Hi</p>".to_string(), "Hi\nthere \u{0} \"quoted\"".to_string())
         );
         assert_eq!(split_body("null"), (String::new(), String::new()));
+    }
+
+    /// The plain-text view's font is the desktop's monospace family, quoted
+    /// so a name with spaces or digits holds, with the generic one behind
+    /// it (#424).
+    #[test]
+    fn plain_text_uses_the_desktop_monospace_family() {
+        assert_eq!(css_monospace_family("Adwaita Mono 11"), "\"Adwaita Mono\",monospace");
+        assert_eq!(css_monospace_family("Source Code Pro Bold 10"), "\"Source Code Pro\",monospace");
+        assert_eq!(css_monospace_family("Monospace 10"), "monospace");
+        assert_eq!(css_monospace_family(""), "monospace");
+        assert_eq!(css_monospace_family("Evil\"}body{x 10"), "\"Evilbodyx\",monospace");
+    }
+}
+
+#[cfg(test)]
+mod compose_font_tests {
+    use super::*;
+
+    /// The default font and size add no style, so the recipient's own font
+    /// stays in charge.
+    #[test]
+    fn style_carries_the_chosen_font() {
+        assert_eq!(font_style("", 0), "");
+        assert_eq!(font_style("Georgia, serif", 12), "font-family:Georgia, serif;font-size:12pt;");
+        assert_eq!(font_style("", 14), "font-size:14pt;");
+    }
+
+    /// A hand-edited settings file cannot close the attribute or the rule.
+    #[test]
+    fn family_cannot_escape_its_style() {
+        assert_eq!(font_style("a\"><script>;}", 0), "font-family:ascript;");
+        assert_eq!(first_family("'Comfortaa', sans-serif"), "Comfortaa");
     }
 }

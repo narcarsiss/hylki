@@ -1,7 +1,293 @@
 # Changelog
 
-## Unreleased
+## 1.44.0 — 2026-10-15
 
+Everything from 1.44.0-beta.1 to 1.44.0-beta.9: Gmail keyboard shortcuts, a
+command palette, smart folders, several signatures per account, a Hylki
+address book, LDAP and Microsoft 365 directories as recipients, Gmail labels
+as colored pills, search results that name their folder, one sort and filter
+button, a list grouped by date, and more formatting in the composer. Italian
+is new; French and Spanish are complete.
+
+- **Translations:** French (PR #465 by frenchy82) and Spanish (PR #467 by
+  Daniel Miguel) are complete.
+- **Added: search results say which folder they are in** (#374, requested
+  by 3v1n0). A search across folders puts a pill with the folder's name on
+  each result.
+- **Changed: "All folders" leaves Trash and Junk out of a search** (#374).
+  **Everywhere** takes them in. The scope is picked from a popover beside
+  the search field instead of a drop-down, with an info button by each
+  choice that says what it searches. Searching while Trash or Junk is open still finds the mail in
+  it.
+- **Added: Gmail labels in colors** (#374). Each label wears one of the tag
+  colors, picked from its name, in the list and the reader. A tag named
+  like the label still sets its color.
+- **Added: Settings → Message List → Tags and labels under the text**
+  (#374). A card's pills go on a line of their own under the message's
+  text, leaving the subject the full width.
+
+- **Changed: a reply sent from the reading pane becomes its card in the
+  conversation.** The editor lifts out of the composer and moves to where
+  the reply now sits in the conversation, turning into its card on the
+  way, instead of the composer sliding away and the reply turning up once
+  its copy is read back from Sent. The card stays in the conversation
+  until that copy arrives, and goes again if the server refuses the
+  message.
+- **Changed: animations follow GNOME's own Reduce Animation switch.**
+  GNOME Shell turns animations off in every app while a remote desktop
+  session is connected; Hylki now keeps them unless the switch itself is
+  off. The Flatpak cannot read the switch and goes on as before.
+
+- **Changed: the list is grouped by date by default** (#435), on installs
+  that had the switch off too, since it was never asked. **Settings →
+  Message List → Group by date** turns it off, and that sticks.
+
+- **Added: several signatures per account** (#445, requested by rhuhxx).
+  **Add Signature** in an account's settings starts another; each has a
+  name, and **Start messages with this signature** marks the one new
+  messages, replies and forwards open with, or none. With more than one,
+  the composer's signature button lists them by name, with **No
+  Signature**: the one picked replaces the signature in the message.
+- **Changed: a signature's HTML is edited in place.** **Edit HTML** at the
+  end of the signature editor's toolbar shows the source in the editor,
+  and **Preview** turns it back, instead of a separate window. The text
+  area keeps its height when the toolbar is expanded.
+
+- **Fixed: empty space above a message written as Markdown or HTML.** The
+  formatting tools, hidden while a message is written as source, still
+  took their rows of the toolbar, most with the toolbar expanded.
+
+- **Fixed: an LDAP directory that failed went quiet** (#307, reported by
+  3v1n0). It said why once, in the status bar, and every search after
+  that came back empty with no reason. Contacts now lists the failure under
+  **In Directories** at every search, each composer says it once, and the
+  log records what each directory answered.
+- **Added: LDAP directories in the Contacts address book list** (#307).
+  Each directory switched on is listed by name after the address books;
+  picking it shows the people the search finds in it.
+- **Fixed: an LDAP directory found nobody by surname** (#307, reported by
+  3v1n0). Only names and addresses that began with the typed text were
+  asked for, so a surname inside "Name Surname" or name.surname@ was missed
+  unless the server kept it as a surname of its own. Names and addresses
+  now match anywhere, as in Evolution.
+- **Fixed: directory suggestions showed the mail history icon** (#307).
+  Someone in a directory whom you had mailed before was suggested with the
+  clock; a directory's suggestions now carry the address book icon.
+
+- **Fixed: Reply All put your own address back in Cc** (#448, reported by
+  3v1n0, fixed by Christian Dandachi). Only the account's main address was
+  left out, and only written exactly as it is in the account, so a send-as
+  alias, a "Name <address>" form or a +tag address stayed. Every address of
+  the account is now left out, and Reply All to a message you sent answers
+  its recipients instead of you.
+
+- **Changed: the HTML composing format is called HTML source** (#440,
+  reported by erenoglu). It is where a message's HTML is written by hand;
+  the WYSIWYG editor is **Rich text**, which is sent as HTML too, and its
+  description in the format menu and in **Settings → Composing** now says so.
+
+- **Added: more quick filters** (#441). One sort and filter button above
+  the list replaces the sort menu and the unread and starred toggles. Its
+  popover has the sort orders in one column and, in the other, **Unread**,
+  **Starred**, **Has Attachments**, **Addressed to Me**, **From Contacts**,
+  **High Importance**, **Tagged** and **Today**, which combine, with **Clear
+  Filters**. The button turns the accent color while a filter is on.
+
+- **Added: the search field can stay open** (#446, reported by
+  samuel-edlmeier). With **Settings → Message List → Keep the search field
+  open** on, it shows above the list all the time, and **Esc** clears it
+  without hiding it.
+- **Fixed: rows stayed tinted by account after a search was cleared.**
+  Clearing a search with **Esc** left a folder's rows tinted as search
+  results are, and clearing it by **Esc** or a folder change kept a copy of
+  every folder's messages in memory, until the next search.
+
+- **Added: more of Gmail's keys** (#392, reported by 3v1n0). With Gmail keys
+  on, `]` and `}` archive the conversation and open the older one, `[` and
+  `{` the newer one; `* r`, `* u`, `* s` and `* t` select the read, unread,
+  starred or unstarred conversations; **Shift+R**, **Shift+A**, **Shift+F**
+  and **d** reply, reply to all, forward or write in a composer window; and
+  **Shift+N** checks for new mail.
+
+- **Added: sensitivity labels by name** (#411, reported by erenoglu). A
+  Purview label that a message carries only as an ID showed as **Labeled**.
+  With **Show sensitivity label names** on in a Microsoft 365 account's
+  settings, Hylki reads the organization's labels through Microsoft Graph
+  and shows the label's name, its color on the tag icon and the
+  organization's description in the tooltip.
+- **Changed: a Microsoft 365 account's Graph switches are together**, in a
+  Microsoft 365 group of its settings: the directory search, suggesting only
+  from the account, and the sensitivity label names.
+
+- **Fixed: keys pressed while a conversation loaded were lost** (#392,
+  reported by 3v1n0). Opening a conversation from the keyboard gave the
+  reading pane's web view the keyboard while its page was still being
+  replaced, and it dropped what it was given, so `#` did nothing. The
+  loading page holds the keyboard until the conversation is shown.
+- **Changed: replying and writing show they have started** (#392). The
+  pointer turns busy as soon as **r**, **a**, **f** or **c** is pressed or
+  the button clicked, before the composer is built, and the editor shows a
+  spinner until it is ready. A second press meanwhile is ignored.
+
+- **Fixed: an unread conversation opened with its first message read**
+  (#392, reported by 3v1n0). Opening a conversation marked the message its
+  row is filed under read at once, so after **Shift+U** or `_` that message
+  came back read, and folded. It is now marked as the reader shows it, like
+  every other message of the conversation, and a message read while the
+  conversation is open no longer folds under you.
+- **Fixed: marking several conversations read marked only their first
+  messages** (#392). A conversation's row in a selection stands for all of
+  it, from the keys, the toolbar, the bar above the list and its menu, and
+  archive, delete and spam take the whole conversation too.
+- **Changed: Gmail keys close the conversation** (#392). **u** and **Esc**
+  close it and leave the cursor on its row, as do **Shift+U** and `_` once
+  they have marked it. **n** and **p** start from the first message unread or
+  open, not from the conversation's first.
+- **Changed: Gmail's x selects without opening** (#392). The reading pane
+  counts the selected conversations and the bar above the list acts on them;
+  **o**, **Enter** or a click opens a row and ends the selection, in the
+  reading pane, and with several selected **o** and **Enter** do nothing. An
+  action key pressed with nothing selected says a selection is needed.
+  Deleting the selection leaves the cursor on the conversation above it, or
+  the one below, without opening it.
+- **Changed: Archive on Gmail leaves mail under its label** (#392). From a
+  label, Starred, Sent or All Mail, archiving takes the conversation out of
+  the Inbox, as Gmail does, instead of moving it to All Mail, which took the
+  label off.
+
+- **Added: addresses in To, Cc and Bcc are pills.** A space after a whole
+  address, Return or a comma makes one, and the field never ends in a comma.
+  Backspace on an empty field turns the last pill back into text to edit; a
+  double click edits any pill and its × removes it. An address that cannot
+  be sent to shows red.
+- **Fixed: Hylki closed at launch when the session's locale was missing
+  from the Flatpak runtime** (#437, reported by Bohne13). The app now runs
+  in C.UTF-8 in that case, so its reading pane starts.
+- **Changed: the Correspondents column names the newest writer first**
+  (#443, suggested by erenoglu), the one the conversation is waiting on,
+  rather than whoever opened it.
+- **Added: the Correspondents and Tags headings sort the list** (#443),
+  like every other column heading. Correspondents sorts by the names the
+  column shows; Tags by tag name, untagged mail last.
+- **Added: a single-line list can scroll sideways** (#443). With
+  **Settings → Message List → Columns → Fit columns to the list** switched
+  off, the columns keep the widths set for them and a list too narrow for
+  them scrolls, the headings with it. On, the default, the name and tag
+  columns narrow to fit as before.
+- **Added: Customize Columns… on the column headings' right-click menu**
+  (#443), which opens Settings at Message List → Columns.
+- **Changed: swipe actions are for the card layout** (#443). A single line
+  no longer swipes; sideways is how it scrolls.
+- **Added: a Microsoft 365 account can suggest only its own people** (#410,
+  suggested by erenoglu). With **Suggest only from this account** on, under
+  **Search the organization directory** in the account's settings, a message
+  written from it is offered the organization's directory and the people in
+  its own mail, not GNOME Contacts, LDAP directories or other accounts.
+- **Fixed: a personal Microsoft account asked for an organization list on
+  every pause in the typing** (#410). Microsoft has no such list for it, and
+  its refusal now stops the asking for the session, as a work account's does.
+- **Fixed: single-line columns after Tags fell out of line** (#443) on
+  rows without tags. Tags is a column of fixed width now, resized from its
+  heading like the names.
+- **Changed: column resize lines show only under the pointer** (#443).
+  At rest they sat across the headings' names.
+- **Changed: Settings → Message List → Columns shows every column it
+  holds** (#443): the Shown row wraps instead of scrolling, where past six
+  columns the rest were out of sight.
+
+- **Fixed: the composer's font menu went on saying Sans Serif** (#358,
+  reported by erenoglu). A font applied to selected text, or chosen for the
+  next words typed, now shows in the menu at once; the size menu does the
+  same for a size.
+- **Fixed: a font picked with Other Font… was lost before it was typed**
+  (#358). With nothing selected, the font now holds for the next words
+  typed, as a size does, however the focus moves. Accepting the font dialog
+  with no font selected closed Hylki; it now changes nothing.
+- **Added: the last five fonts picked with Other Font…** are listed at the
+  foot of the composer's font menu, and the menu shows each font in its own
+  face (#358).
+- **Fixed: the formatting toolbar's menus did not open near the foot of
+  the screen** (#358). A menu taller than the room there now scrolls.
+- **Added: a font and size for new messages** (#358, suggested by
+  erenoglu). **Settings → Composing → Font** and **Font size** set what
+  rich-text messages are written in, and they go out with the message.
+  The font list has the composer's fonts, the recent picks and **Other
+  Font…**. They apply to what you write, not to the signature or the
+  quoted message. Default leaves both to the recipient, as before.
+- **Changed: Delete Draft is in the Save Draft button's menu**, under Save
+  as Template, rather than a button of its own in the composer's header.
+- **Added: group the message list by date** (#435, suggested by rhuhxx).
+  **Settings → Message List → Group by date** puts Today, Yesterday, Last 7
+  days, Last 14 days and Older headings over a list sorted by date. A
+  conversation stays under one heading with its replies.
+- **Fixed: Microsoft 365 and JMAP folders showed only their newest 300
+  messages** (#429, reported by Dandiccf). The newest 300 still come first;
+  the rest of the folder is indexed in the background, as on IMAP, and mail
+  deleted elsewhere leaves the list. A refresh no longer drops the older
+  mail already listed.
+- **Added: replies follow a plain-text original** (#436, suggested by
+  3v1n0). With **Settings → Composing → Reply in the original's format**
+  on, a reply or forward of mail sent as plain text opens in plain text.
+  Mail with an HTML part starts in the format chosen in **Write messages
+  in**. Quoting plain-text mail also keeps its indents and line ends.
+- **Added: the app icon's unread count can count only new mail** (#431,
+  suggested by 3v1n0). **Settings → System → Unread count on the app icon**
+  is now Off, All unread inbox mail (the default, as before) or New since
+  last in front: the inbox mail that arrived while Hylki was behind other
+  windows and is still unread, cleared when Hylki comes to the front.
+- **Fixed: LDAP directories set up in Evolution were never searched** (#307,
+  reported by 3v1n0). Hylki gave up before Evolution Data Server had signed
+  in with the password Evolution stored; it now waits for that sign-in, and
+  notices a directory switched on in Evolution without a restart. The
+  Contacts search asks the directories too and lists matches under **In
+  Directories**, with **Add to Contacts**. A directory that cannot be asked
+  says why once in the status bar and in its row in Settings.
+- **Fixed: Gmail keys acted on one message of a conversation** (#392,
+  reported by 3v1n0).
+  **Shift+I**, **Shift+U** and **e** now mark or archive the whole
+  conversation that is open, and the toolbar's Archive takes a
+  conversation's row as Delete does. `_` marks unread from the message
+  being read onward, and `;` and `:` expand and collapse every message.
+  **j** and **k** skip the replies of a conversation opened out in the list
+  and outline the row they reach; **o** takes the keyboard into the reader,
+  where **j** and **k** open the next or previous conversation and **Esc**
+  goes back like **u**. The shortcuts window is wider and lists each go-to
+  key on its own row, and Settings greys out Gmail keys while single-key
+  shortcuts are off.
+- **Fixed: switching the composer to plain text kept the formatting on
+  screen** (#424, reported by 3v1n0). Plain text now shows the message as
+  it is sent, in the desktop's monospace font: bold and the like go, a
+  link is followed by its address, a quote becomes `> ` lines, and paste
+  brings in text alone. When the body has formatting, pictures or links,
+  the composer asks first. A composer that opens in plain text starts
+  that way too, and a plain-text signature keeps the space of its `-- `
+  line.
+- **Added: Ctrl+Shift+K opens the command palette on its actions** (#399,
+  suggested by 3v1n0), with `>` already typed.
+- **Changed: the status bar sits at the bottom of the window** (#433,
+  reported by 3v1n0). At the top, an error coming in pushed the whole window
+  down under the pointer; at the foot nothing moves, and its list of
+  messages and the console open upward. It moves there for everyone;
+  **Settings → System → Status bar** puts it back at the top. Its buttons
+  read Export log, the console, then the bar's own toggle.
+- **Fixed: a narrow composer was cut off at the right.** The formatting
+  tools now wrap onto further rows one by one, the chevron stays beside them
+  wherever the row has room for it, and a small composer window stops
+  shrinking once its folded header is as narrow as it gets.
+- **Fixed: the settings search listed every OpenPGP key** (#432, reported
+  by 3v1n0). A keyring with many people's keys buried the settings under
+  them; keys are no longer search results.
+- **Italian translation** (#430 by Jimmy), complete but for the strings
+  added after it was made.
+- **Catalan translation** brought up to date (PR #422 by jolupa).
+- **Fixed: right-click menus did nothing on X11** (#427, by Fabio Rotondo).
+  Releasing the right button took the menu's hold on the pointer away, so
+  every entry only closed the menu. On X11 the menu now opens once the button
+  is up; Wayland is unchanged.
+- **Added: Create Filter from Message…** (#428, by Fabio Rotondo). The
+  entry in the message list's and the reader's right-click menus opens the
+  filter editor on a new rule with the sender's address and the subject,
+  without a leading "Re:" or "Fwd:", already filled in.
 - **Changed: Hylki's icons look the same on every desktop.** Every icon is
   drawn from copies built into the app, including those GTK and libadwaita
   draw for their own buttons, arrows and checkmarks; the desktop's icon theme
@@ -43,7 +329,11 @@
   or with **New Smart Folder…** in the command palette.
 - **Added: Gmail labels show as pills** (#374, requested by vieira-temes and
   3v1n0), beside the tags in the message list and the reader. Gmail's own
-  labels and the label of the folder being read are left out.
+  labels and the label of the folder being read are left out. A label named
+  like a tag counts as the tag in its view, the tag menus and smart
+  folders, and tagging on Gmail sets the label as well as the keyword. A
+  Gmail account's own folders are headed Labels in the sidebar and wear a
+  tag rather than a folder.
 - **Added: the Microsoft 365 organization directory** (#410, requested by
   erenoglu). A Microsoft 365 account signed in within Hylki can suggest
   colleagues as a recipient is typed: **Search the organization directory**
@@ -61,6 +351,18 @@
   erenoglu). A message classified with Microsoft Purview, or with Outlook's
   older Sensitivity setting, shows its label as a pill beside the sender's
   name. Hylki shows the label only; it does not apply its rules or set one.
+- **Removed: on-premise Exchange servers** (#391), added in
+  1.44.0-beta.5. Hylki will not support Exchange Web Services. An account
+  added with it now reads as an IMAP account that cannot connect, and can be
+  removed in **Settings → Accounts**.
+- **Fixed: an open account could fold up in the sidebar by itself**, at the
+  next change to the folder list (tagging on Gmail makes one). Opening an
+  account to show a folder picked inside it was recorded twice and undone.
+- **Fixed: the main menu button could show a gear** instead of three bars,
+  where a theme or another program had an icon of the same name. GTK still
+  searched the icon folders on disk before Hylki's built-in icons; unless
+  **Use the desktop's icons** is on, it now searches only Hylki's own, and
+  the app icon is built in too.
 - **Catalan translation** (PR #415 by jolupa), complete but for this
   release's three icon strings.
 - **Translations:** French (PR #418 by frenchy82) brought up to date.

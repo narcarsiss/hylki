@@ -201,6 +201,8 @@ pub struct SectionData {
     /// its folders are left out of every unified row and chip, and only
     /// its own section lists them.
     pub in_unified: bool,
+    /// A Gmail account, whose own folders are labels and say so (#374).
+    pub gmail: bool,
 }
 
 /// Initial state for the sidebar.
@@ -683,7 +685,11 @@ pub enum SidebarOutput {
         name: String,
         path: String,
     },
-    ToggleCollapse(u32),
+    /// An account's section was opened or folded, by the user or to show a
+    /// folder picked inside it: the state it is now in, not a toggle, since
+    /// both sidebars (the pane and the peek) report the same reveal and two
+    /// toggles cancelled out (the account then folded at the next rebuild).
+    AccountFolded { id: u32, folded: bool },
     /// The user toggled the collapsible custom-folders section for an account.
     ToggleCustomFolders(u32),
     /// The user toggled icon-only mode; `true` means collapsed.
@@ -1787,7 +1793,7 @@ impl Sidebar {
                         label.set_visible(!expanded && n > 0);
                     }
                     if !rail_only {
-                        let _ = sender.output(SidebarOutput::ToggleCollapse(id));
+                        let _ = sender.output(SidebarOutput::AccountFolded { id, folded: !expanded });
                     }
                 }
             }
@@ -3004,10 +3010,19 @@ impl Sidebar {
                         custom_chevron.set_margin_start(2);
                     }
                     let btn = heading_chevron(&custom_chevron);
-                    btn.set_tooltip_text(Some(i18n("Show or hide folders").as_str()));
+                    btn.set_tooltip_text(Some(
+                        if section.gmail { i18n("Show or hide labels") } else { i18n("Show or hide folders") }.as_str(),
+                    ));
                     hb.append(&btn);
                     folders_chevron = Some(btn);
-                    let lbl = gtk::Label::new(Some(&i18n_f("Folders ({len})", &[("len", &(custom.len()).to_string())])));
+                    // Gmail's own word for them: its folders are labels.
+                    let len = custom.len().to_string();
+                    let heading = if section.gmail {
+                        i18n_f("Labels ({len})", &[("len", &len)])
+                    } else {
+                        i18n_f("Folders ({len})", &[("len", &len)])
+                    };
+                    let lbl = gtk::Label::new(Some(&heading));
                     lbl.set_halign(gtk::Align::Start);
                     lbl.set_hexpand(true);
                     hb.append(&lbl);
@@ -3020,7 +3035,7 @@ impl Sidebar {
                     sender,
                 );
                 if self.collapsed {
-                    folders_toggle.set_tooltip_text(Some(i18n("Folders").as_str()));
+                    folders_toggle.set_tooltip_text(Some(if section.gmail { i18n("Labels") } else { i18n("Folders") }.as_str()));
                 }
                 // Right-click: how this account's folders are sorted.
                 let click = gtk::GestureClick::new();
@@ -4705,7 +4720,7 @@ impl Sidebar {
             label.set_visible(false);
         }
         if !self.collapsed {
-            let _ = sender.output(SidebarOutput::ToggleCollapse(id));
+            let _ = sender.output(SidebarOutput::AccountFolded { id, folded: false });
         }
     }
 
@@ -5790,10 +5805,16 @@ pub(crate) fn folder_depth(folder: &Folder, all: &[&Folder]) -> usize {
         .count()
 }
 
-/// The icon a folder row wears when a filter rule files into it: the
-/// filter-folder glyph in the account's color, in place in the hierarchy.
+/// The icon a folder row in an account wears: the filter-folder glyph in
+/// the account's color where a filter rule files into it, a tag for a Gmail
+/// label, otherwise its kind's own.
 fn filter_icon(section: &SectionData, folder: &Folder) -> FolderGlyph {
     if !section.filtered.iter().any(|f| f.id == folder.id) {
+        // A Gmail account's own folders are labels (#374): a tag, not a
+        // folder.
+        if section.gmail && folder.kind == FolderKind::Custom {
+            return FolderGlyph::Icon(gtk::Image::from_icon_name("tag-symbolic"));
+        }
         return FolderGlyph::Plain;
     }
     if folder.kind == FolderKind::Custom {

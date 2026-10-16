@@ -25,6 +25,7 @@ mod desktop;
 mod directory;
 mod goa;
 mod graph_directory;
+mod graph_labels;
 mod i18n;
 mod invite;
 mod launcher_badge;

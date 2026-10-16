@@ -596,6 +596,7 @@ impl PgpKeys {
 /// One key as a row: who it is for, its id and standing, and its actions.
 fn key_row(key: &KeyInfo, own: bool, sender: &ComponentSender<PgpKeys>) -> adw::ActionRow {
     let row = adw::ActionRow::new();
+    row.add_css_class(crate::ui::preferences::NOT_SEARCHED);
     row.set_title(&gtk::glib::markup_escape_text(key.primary_uid()));
     let mut parts = vec![pgp::key_display(&key.key_id)];
     if let Some(exp) = key.expires {

@@ -156,7 +156,7 @@ pub fn show_context_menu_popover(
     let y = fitted_anchor(parent.as_ref(), &popover, x, y);
     popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
     popover.connect_closed(|p| p.unparent());
-    popover.popup();
+    popup_after_release(&popover, parent.as_ref());
 
     // HYLKI_SHOWCASE_MENU=main|<submenu label> captures the popover's page
     // a second after it opens (the window snapshot never includes it).
@@ -175,6 +175,52 @@ pub fn show_context_menu_popover(
         }
     }
     popover
+}
+
+/// Show `popover`, on X11 only once the mouse button that opened it is up.
+///
+/// Menus open on the right-click press. On X11 the release that follows
+/// ends the press's implicit grab, and that breaks the grab the popover has
+/// just taken: it stays on screen but no click reaches it any more, so the
+/// next one only closes it and no entry ever acts. Waiting for the release
+/// keeps the popover's grab whole. Wayland has no such problem, and there
+/// the menu still opens on the press.
+fn popup_after_release(popover: &gtk::Popover, parent: &gtk::Widget) {
+    let held = gtk::gdk::ModifierType::BUTTON1_MASK
+        | gtk::gdk::ModifierType::BUTTON2_MASK
+        | gtk::gdk::ModifierType::BUTTON3_MASK;
+    let display = parent.display();
+    let is_x11 = display.type_().name() == "GdkX11Display";
+    let Some(root) = parent.root().filter(|_| is_x11) else { return popover.popup() };
+    // The device's own modifier state reads empty on X11; asking the
+    // window's surface where the pointer is queries the server, buttons too.
+    let surface = root.surface();
+    let pointer = display.default_seat().and_then(|s| s.pointer());
+    let state = surface.zip(pointer).and_then(|(s, p)| s.device_position(&p)).map(|(_, _, m)| m);
+    let pressed = state.is_some_and(|m| m.intersects(held));
+    if !pressed {
+        return popover.popup();
+    }
+
+    // The press was on this window, so its release comes here too.
+    let watch = gtk::EventControllerLegacy::new();
+    watch.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let popover = popover.clone();
+    watch.connect_event(move |watch, ev| {
+        if ev.event_type() != gtk::gdk::EventType::ButtonRelease {
+            return gtk::glib::Propagation::Proceed;
+        }
+        let watch = watch.clone();
+        let popover = popover.clone();
+        gtk::glib::idle_add_local_once(move || {
+            if let Some(w) = watch.widget() {
+                w.remove_controller(&watch);
+            }
+            popover.popup();
+        });
+        gtk::glib::Propagation::Proceed
+    });
+    root.upcast_ref::<gtk::Widget>().add_controller(watch);
 }
 
 /// Room left between a menu and the window's edges.

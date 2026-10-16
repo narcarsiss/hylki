@@ -11,7 +11,7 @@
 use crate::i18n::{i18n, i18n_f};
 
 /// The label a message carries.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SensitivityLabel {
     /// The name the organization gave it, as written in the header, or for
     /// the older header its value (`personal`, `private`,
@@ -20,6 +20,13 @@ pub struct SensitivityLabel {
     /// The Purview label's id; empty for the older header.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
+    /// The label's color as `#rrggbb`, and what the organization says it
+    /// means: both from its list of labels (`graph_labels`), empty when
+    /// that was not read.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tooltip: String,
 }
 
 impl SensitivityLabel {
@@ -46,12 +53,14 @@ impl SensitivityLabel {
             return i18n_f("The sender marked this message “{label}”.", &[("label", &self.short_label())]);
         }
         if self.name.is_empty() {
-            return i18n("The sender's organization labeled this message, without saying the label's name. Hylki shows the label but does not apply its rules.");
+            return i18n("The sender's organization labeled this message without naming the label in it. For a Microsoft 365 account, turning on “Show sensitivity label names” in its settings shows the name. Hylki shows the label but does not apply its rules.");
         }
-        i18n_f(
+        let said = i18n_f(
             "The sender's organization labeled this message “{label}”. Hylki shows the label but does not apply its rules.",
             &[("label", &self.name)],
-        )
+        );
+        // The organization's own words, as Outlook shows them.
+        if self.tooltip.is_empty() { said } else { format!("{said}\n\n{}", self.tooltip) }
     }
 }
 
@@ -106,13 +115,13 @@ fn from_msip(value: &str) -> Option<SensitivityLabel> {
     // A tenant that keeps names out of its metadata writes the id there,
     // which says nothing to a reader; a sublabel is "Parent\Child".
     let name = if looks_like_guid(&name) { String::new() } else { name.replace('\\', " / ") };
-    Some(SensitivityLabel { name, id })
+    Some(SensitivityLabel { name, id, ..Default::default() })
 }
 
 fn from_sensitivity(value: &str) -> Option<SensitivityLabel> {
     let v = value.trim().to_ascii_lowercase();
     matches!(v.as_str(), "personal" | "private" | "company-confidential")
-        .then(|| SensitivityLabel { name: v, id: String::new() })
+        .then(|| SensitivityLabel { name: v, ..Default::default() })
 }
 
 fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {

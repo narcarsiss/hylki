@@ -10,7 +10,7 @@ use relm4::prelude::*;
 use crate::models::{Message, ThreadSummary};
 use crate::ui::context_menu::{show_context_menu_popover, MenuEntry};
 use crate::i18n::i18n;
-use crate::ui::message_row::{RowData, RowMeta, RowShared};
+use crate::ui::message_row::{DaySection, RowData, RowMeta, RowShared};
 pub use crate::ui::message_row::{tag_menu_entries, RowAction};
 
 /// The message-list pane's floor: exactly what a conversation-member card
@@ -72,15 +72,41 @@ fn message_cmp(a: &Message, b: &Message, order: SortOrder) -> std::cmp::Ordering
             .then(b.timestamp.cmp(&a.timestamp)),
         // Soonest due first; mail with no due date after all that has one.
         SortOrder::Due => (a.due == 0, a.due).cmp(&(b.due == 0, b.due)).then(b.timestamp.cmp(&a.timestamp)),
+        // Both are put in order by the rebuild, which knows a conversation's
+        // writers and the tags' names (#443); one message alone goes by its
+        // sender and its keywords.
+        SortOrder::Correspondents => name_of(a).cmp(&name_of(b)).then(b.timestamp.cmp(&a.timestamp)),
+        SortOrder::Tags => {
+            let tags = |m: &Message| m.keywords.join(",").to_lowercase();
+            tags(a).cmp(&tags(b)).then(b.timestamp.cmp(&a.timestamp))
+        }
     }
 }
 
-/// The order a click on a column's heading sorts by (#334), if the column
-/// has one. In Sent the sender column names the recipients, and sorts by
-/// them.
-pub fn column_sort(column: crate::config::ListColumn, show_recipient: bool) -> Option<SortOrder> {
+/// What the Tags column sorts by (#443): the names of the tags a message
+/// wears, as its row shows them. Empty for a message without any.
+fn tag_sort_key(m: &Message, tags: &[crate::config::Tag]) -> String {
+    let names: Vec<String> = m
+        .pills(tags)
+        .iter()
+        .map(|p| match p {
+            crate::models::Pill::Tag(t) => t.name.to_lowercase(),
+            crate::models::Pill::Label(name) => name.to_lowercase(),
+        })
+        .collect();
+    names.join(", ")
+}
+
+/// Order two sort keys of text, A to Z, an empty key after every other.
+fn text_key_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    (a.is_empty(), a).cmp(&(b.is_empty(), b))
+}
+
+/// The order a click on a column's heading sorts by (#334). In Sent the
+/// sender column names the recipients, and sorts by them.
+pub fn column_sort(column: crate::config::ListColumn, show_recipient: bool) -> SortOrder {
     use crate::config::ListColumn as C;
-    Some(match column {
+    match column {
         C::Star => SortOrder::FlaggedFirst,
         C::Sender if show_recipient => SortOrder::Recipients,
         C::Sender => SortOrder::Sender,
@@ -91,8 +117,9 @@ pub fn column_sort(column: crate::config::ListColumn, show_recipient: bool) -> O
         C::Account => SortOrder::Account,
         C::Due => SortOrder::Due,
         C::Date => SortOrder::DateNewest,
-        C::Correspondents | C::Tags => return None,
-    })
+        C::Correspondents => SortOrder::Correspondents,
+        C::Tags => SortOrder::Tags,
+    }
 }
 
 /// The conversation key a message belongs to: its owning account plus the
@@ -454,7 +481,7 @@ pub struct SourceThreads {
 
 /// Run `f` once, when `clock` has painted its next frame, or after a short
 /// wait for a window that is not drawing.
-fn after_next_paint(clock: &gtk::gdk::FrameClock, f: impl FnOnce() + 'static) {
+pub(crate) fn after_next_paint(clock: &gtk::gdk::FrameClock, f: impl FnOnce() + 'static) {
     let f = Rc::new(std::cell::Cell::new(Some(Box::new(f) as Box<dyn FnOnce()>)));
     let handler = Rc::new(std::cell::Cell::new(None::<glib::SignalHandlerId>));
     let once = {
@@ -471,6 +498,25 @@ fn after_next_paint(clock: &gtk::gdk::FrameClock, f: impl FnOnce() + 'static) {
     let on_paint = once.clone();
     handler.set(Some(clock.connect_after_paint(move |_| on_paint())));
     glib::timeout_add_local_once(std::time::Duration::from_millis(100), once);
+}
+
+/// Keep `adj` at the very top for a moment (#435). A `scroll_to` the first
+/// row lines that row up with the top once the view is laid out, which
+/// leaves the date heading above the row out of sight. Only a move no
+/// further than that heading is undone, and only briefly, so a scroll of the
+/// user's own goes on. It is undone after the layout, not during it: the
+/// view does not follow a move made while it is being laid out.
+fn hold_top(adj: &gtk::Adjustment, shared: &Rc<RowShared>) {
+    let shared = Rc::downgrade(shared);
+    let id = adj.connect_value_changed(move |adj| {
+        let heading = shared.upgrade().and_then(|s| s.first_heading_height()).map_or(f64::MAX, f64::from);
+        if adj.value() > 0.0 && adj.value() <= heading + 1.0 {
+            let adj = adj.clone();
+            glib::idle_add_local_once(move || adj.set_value(0.0));
+        }
+    });
+    let adj = adj.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || adj.disconnect(id));
 }
 
 /// Where [`compute_thread_keys`] files a message: its account, folder and id.
@@ -517,8 +563,12 @@ pub struct MessageList {
     /// is active, so `AllFolders` scope can filter across the whole mailbox. Empty
     /// when not searching.
     search_pool: Vec<Rc<Message>>,
+    /// The pool's folders, by `(account_id, folder_id)`.
+    pool_folders: Rc<std::collections::HashMap<(u32, u32), PoolFolder>>,
     /// Which messages the search field filters over.
     scope: SearchScope,
+    /// The search scope's button and popover.
+    scope_picker: Option<ScopePicker>,
     /// The search field widget, kept so a folder switch can clear its text.
     search_entry: Option<gtk::SearchEntry>,
     /// The search toolbar is hidden until asked for (#102).
@@ -526,6 +576,8 @@ pub struct MessageList {
     /// When the search closed itself (empty entry losing focus): the button
     /// click that caused that blur arrives right after and must not reopen.
     search_closed_at: Option<std::time::Instant>,
+    /// The search toolbar never hides (#446): closing only clears it.
+    search_pinned: bool,
     /// The rows, in order: what the model shows, one message each.
     shown: Vec<Rc<Message>>,
     /// Total messages matching the current filter.
@@ -615,6 +667,10 @@ pub struct MessageList {
     reader_keys: Vec<(u32, u32)>,
     /// How many rows are currently selected (drives the bulk-action bar).
     selection_count: usize,
+    /// Gmail's x is checking rows for an action rather than opening them
+    /// (#392): a selection of one stays closed too, and the reader says how
+    /// many are selected. Opening a row, or a plain click, ends it.
+    checking: bool,
     /// Which way the user last moved through the list: +1 down, -1 up.
     /// Deleting the viewed message advances in this direction (like Apple
     /// Mail): triaging downward selects the message below the deleted one,
@@ -679,10 +735,10 @@ pub struct MessageList {
     scroller: Option<gtk::ScrolledWindow>,
     /// Current sort order for the list.
     sort: SortOrder,
-    /// Quick filter (#97): show only unread messages.
-    unread_only: bool,
-    /// Quick filter: show only starred messages.
-    starred_only: bool,
+    /// The header's quick filters (#97, #441).
+    quick: QuickFilters,
+    /// Your contacts' addresses, lower case, while "From Contacts" is on.
+    contact_addresses: Option<std::sync::Arc<std::collections::HashSet<String>>>,
     /// The last count string sent to the header bar, to emit only on change.
     last_count: String,
     /// Group messages into conversation threads (user preference).
@@ -705,23 +761,35 @@ pub struct MessageList {
     graph_in_view: bool,
     /// The sort runs the other way: a heading clicked twice (#334).
     sort_reversed: bool,
+    /// Headings divide a list sorted by date into Today, Yesterday and so
+    /// on (#435), and whether the view draws them now: only a date sort
+    /// has them.
+    group_by_date: bool,
+    day_headings: bool,
+    /// A card's pills on a line under its text (#374).
+    pills_below: bool,
     /// Show the column headings over a single-line list (#334).
     headings: bool,
     headings_bar: gtk::Box,
     /// The widths columns were dragged to by their headings (#334).
     widths: std::collections::HashMap<crate::config::ListColumn, i32>,
+    /// Columns keep their widths and a list too narrow for them scrolls
+    /// sideways; off, the name columns narrow to fit the pane (#443).
+    column_scroll: bool,
     /// How wide the rows are, for fitting the columns into it.
     pane_width: i32,
     /// The headings' sized cells, which a drag resizes in place.
     heading_bins: std::cell::RefCell<std::collections::HashMap<crate::config::ListColumn, crate::ui::column_bin::ColumnBin>>,
 }
 
-/// The Correspondents column (#334): who wrote in a conversation, oldest
-/// first and each once, you as "me". A conversation only you have written
-/// in, a message in Sent say, names who it went to instead.
+/// The Correspondents column (#334): who wrote in a conversation, newest
+/// first and each once, you as "me". The newest leads because it is who the
+/// conversation waits on, as the row's sender does (#443). A conversation
+/// only you have written in, a message in Sent say, names who it went to
+/// instead.
 fn correspondents(msgs: &[&Message]) -> String {
     let mut sorted = msgs.to_vec();
-    sorted.sort_by_key(|m| m.timestamp);
+    sorted.sort_by_key(|m| std::cmp::Reverse(m.timestamp));
     let mut seen = std::collections::HashSet::new();
     let mut names: Vec<String> = Vec::new();
     let mut others = false;
@@ -739,7 +807,7 @@ fn correspondents(msgs: &[&Message]) -> String {
         }
     }
     if !others {
-        if let Some(newest) = sorted.last() {
+        if let Some(newest) = sorted.first() {
             let to = crate::ui::message_row::recipient_names(&newest.to);
             if !to.is_empty() {
                 return format!("To: {to}");
@@ -763,10 +831,12 @@ pub enum SortOrder {
     Attachment,
     Importance,
     Due,
+    Correspondents,
+    Tags,
 }
 
 impl SortOrder {
-    const KEYS: [(SortOrder, &'static str); 11] = [
+    const KEYS: [(SortOrder, &'static str); 13] = [
         (SortOrder::DateNewest, "date_newest"),
         (SortOrder::DateOldest, "date_oldest"),
         (SortOrder::Sender, "sender"),
@@ -778,6 +848,8 @@ impl SortOrder {
         (SortOrder::Attachment, "attachment"),
         (SortOrder::Importance, "importance"),
         (SortOrder::Due, "due"),
+        (SortOrder::Correspondents, "correspondents"),
+        (SortOrder::Tags, "tags"),
     ];
 
     pub fn from_key(key: &str) -> Self {
@@ -805,10 +877,135 @@ impl SortOrder {
 /// Which messages the search field filters over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchScope {
-    /// Every folder of every account (the merged `search_pool`).
+    /// Every folder of every account (the merged `search_pool`) but Trash
+    /// and Junk, unless the list is showing one of them (#374).
     AllFolders,
+    /// Every folder of every account, Trash and Junk too.
+    Everywhere,
     /// Only the folder currently shown (the local `all` index).
     ThisFolder,
+}
+
+impl SearchScope {
+    /// In the order the search bar's dropdown lists them.
+    const ALL: [SearchScope; 3] = [SearchScope::AllFolders, SearchScope::Everywhere, SearchScope::ThisFolder];
+
+    fn label(self) -> String {
+        match self {
+            SearchScope::AllFolders => i18n("All folders (except trash & junk)"),
+            SearchScope::Everywhere => i18n("Everywhere"),
+            SearchScope::ThisFolder => i18n("This folder"),
+        }
+    }
+
+    /// The name on the picker's button, short enough for a narrow list: the
+    /// popover spells the scope out.
+    fn button_label(self) -> String {
+        match self {
+            SearchScope::AllFolders => i18n("All folders"),
+            _ => self.label(),
+        }
+    }
+
+    /// What the scope searches, behind the info button beside its name in
+    /// the picker.
+    fn description(self) -> String {
+        match self {
+            SearchScope::AllFolders => i18n(
+                "Every folder of every account, except Trash and Junk. A search started in Trash or Junk looks there too.",
+            ),
+            SearchScope::Everywhere => i18n("Every folder of every account, Trash and Junk included."),
+            SearchScope::ThisFolder => i18n("Only the folder or view the list is showing."),
+        }
+    }
+}
+
+/// The search scope's button and popover (#374): each scope by name, with
+/// an info button that tells what it searches.
+struct ScopePicker {
+    button: gtk::MenuButton,
+    label: gtk::Label,
+    radios: Vec<(SearchScope, gtk::CheckButton)>,
+    /// Each scope's info button, in the same order.
+    infos: Vec<gtk::MenuButton>,
+}
+
+impl ScopePicker {
+    fn new(button: &gtk::MenuButton, input: &relm4::Sender<MessageListInput>) -> Self {
+        // An ellipsizing label, so the button, not the messages, gives way
+        // first in a narrow list (#29).
+        let label = gtk::Label::new(Some(&SearchScope::AllFolders.button_label()));
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        let face = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        face.append(&label);
+        face.append(&gtk::Image::from_icon_name("pan-down-symbolic"));
+        button.set_child(Some(&face));
+
+        let popover = gtk::Popover::new();
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        list.add_css_class("search-scope-popover");
+        let mut radios: Vec<(SearchScope, gtk::CheckButton)> = Vec::new();
+        let mut infos = Vec::new();
+        for scope in SearchScope::ALL {
+            let radio = gtk::CheckButton::with_label(&scope.label());
+            radio.set_hexpand(true);
+            // Beside the radio, not in it: a click on it must not pick the
+            // scope.
+            let about = gtk::Label::new(Some(&scope.description()));
+            about.set_xalign(0.0);
+            about.set_wrap(true);
+            about.set_max_width_chars(34);
+            about.add_css_class("search-scope-about");
+            let about_popover = gtk::Popover::new();
+            about_popover.set_child(Some(&about));
+            let info = gtk::MenuButton::new();
+            info.set_icon_name("info-outline-symbolic");
+            info.set_valign(gtk::Align::Center);
+            info.add_css_class("flat");
+            info.add_css_class("circular");
+            info.set_tooltip_text(Some(&i18n("What this searches")));
+            info.set_popover(Some(&about_popover));
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+            row.append(&radio);
+            row.append(&info);
+            infos.push(info);
+            if let Some((_, first)) = radios.first() {
+                radio.set_group(Some(first));
+            }
+            radio.set_active(scope == SearchScope::AllFolders);
+            let input = input.clone();
+            let popover = popover.clone();
+            radio.connect_toggled(move |r| {
+                if r.is_active() {
+                    input.emit(MessageListInput::SetScope(scope));
+                    popover.popdown();
+                }
+            });
+            list.append(&row);
+            radios.push((scope, radio));
+        }
+        popover.set_child(Some(&list));
+        button.set_popover(Some(&popover));
+        Self { button: button.clone(), label, radios, infos }
+    }
+
+    fn sync(&self, scope: SearchScope) {
+        self.label.set_label(&scope.button_label());
+        if let Some((_, radio)) = self.radios.iter().find(|(s, _)| *s == scope) {
+            if !radio.is_active() {
+                radio.set_active(true);
+            }
+        }
+    }
+}
+
+/// A folder of the cross-folder search pool, as its results show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolFolder {
+    /// What the result's folder pill says.
+    pub name: String,
+    /// Trash or Junk: left out of an "All folders" search.
+    pub waste: bool,
 }
 
 /// A bulk action applied to every selected message at once.
@@ -829,12 +1026,166 @@ pub enum BulkAction {
     MoveToInbox,
 }
 
+/// One of the message list's quick filters (#97, #441): with it on, the
+/// list shows only the mail that has the property. Together they narrow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickFilter {
+    Unread,
+    Starred,
+    Attachment,
+    ToMe,
+    Contacts,
+    Important,
+    Tagged,
+    Today,
+}
+
+impl QuickFilter {
+    pub const ALL: [QuickFilter; 8] = [
+        QuickFilter::Unread,
+        QuickFilter::Starred,
+        QuickFilter::Attachment,
+        QuickFilter::ToMe,
+        QuickFilter::Contacts,
+        QuickFilter::Important,
+        QuickFilter::Tagged,
+        QuickFilter::Today,
+    ];
+
+    pub fn label(self) -> String {
+        use crate::i18n::i18n_noop;
+        i18n(match self {
+            QuickFilter::Unread => i18n_noop("Unread"),
+            QuickFilter::Starred => i18n_noop("Starred"),
+            QuickFilter::Attachment => i18n_noop("Has Attachments"),
+            QuickFilter::ToMe => i18n_noop("Addressed to Me"),
+            QuickFilter::Contacts => i18n_noop("From Contacts"),
+            QuickFilter::Important => i18n_noop("High Importance"),
+            QuickFilter::Tagged => i18n_noop("Tagged"),
+            QuickFilter::Today => i18n_noop("Today"),
+        })
+    }
+
+    /// The icon the row, the reader or the sidebar already uses for it.
+    pub fn icon(self) -> &'static str {
+        match self {
+            QuickFilter::Unread => "mail-unread-symbolic",
+            QuickFilter::Starred => "starred-symbolic",
+            QuickFilter::Attachment => "mail-attachment-symbolic",
+            QuickFilter::ToMe => "avatar-default-symbolic",
+            QuickFilter::Contacts => "x-office-address-book-symbolic",
+            QuickFilter::Important => "emblem-important-symbolic",
+            QuickFilter::Tagged => "tag-symbolic",
+            QuickFilter::Today => "x-office-calendar-symbolic",
+        }
+    }
+
+    fn bit(self) -> u16 {
+        1 << self as u16
+    }
+}
+
+/// The quick filters that are on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QuickFilters(u16);
+
+impl QuickFilters {
+    pub fn has(self, f: QuickFilter) -> bool {
+        self.0 & f.bit() != 0
+    }
+
+    pub fn with(self, f: QuickFilter, on: bool) -> Self {
+        Self(if on { self.0 | f.bit() } else { self.0 & !f.bit() })
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+/// What the quick filters need to judge a message, gathered once a pass.
+struct QuickFilterContext {
+    filters: QuickFilters,
+    /// Every address you send from, lower case ("Addressed to Me").
+    own: std::collections::HashSet<String>,
+    /// Your contacts' addresses; none read yet lets nothing through.
+    contacts: Option<std::sync::Arc<std::collections::HashSet<String>>>,
+    tags: Vec<crate::config::Tag>,
+    /// Local midnight, Unix seconds ("Today").
+    today: i64,
+}
+
+impl QuickFilterContext {
+    fn passes(&self, m: &Message) -> bool {
+        QuickFilter::ALL.iter().filter(|f| self.filters.has(**f)).all(|f| match f {
+            QuickFilter::Unread => m.unread,
+            QuickFilter::Starred => m.starred,
+            QuickFilter::Attachment => m.has_attachment,
+            QuickFilter::ToMe => [m.to.as_str(), m.cc.as_str()]
+                .iter()
+                .flat_map(|list| list.split(','))
+                .any(|part| self.own.contains(&bare_address(part))),
+            QuickFilter::Contacts => {
+                self.contacts.as_ref().is_some_and(|c| c.contains(&m.from_addr.trim().to_lowercase()))
+            }
+            QuickFilter::Important => m.importance == crate::models::Importance::High,
+            QuickFilter::Tagged => !m.pills(&self.tags).is_empty(),
+            QuickFilter::Today => m.timestamp >= self.today,
+        })
+    }
+}
+
+/// `Name <addr>` or a bare `addr`, as the address alone in lower case.
+fn bare_address(part: &str) -> String {
+    let part = part.trim();
+    let addr = match part.rsplit_once('<') {
+        Some((_, rest)) => rest.trim_end_matches('>'),
+        None => part,
+    };
+    addr.trim().to_lowercase()
+}
+
+/// The start of today in local time, Unix seconds.
+fn start_of_today() -> i64 {
+    let Ok(now) = glib::DateTime::now_local() else { return 0 };
+    glib::DateTime::new(&now.timezone(), now.year(), now.month(), now.day_of_month(), 0, 0, 0.0)
+        .map(|d| d.to_unix())
+        .unwrap_or(0)
+}
+
+/// Which conversations Gmail's * r, * u, * s and * t select (#392).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckFilter {
+    Read,
+    Unread,
+    Starred,
+    Unstarred,
+}
+
+impl CheckFilter {
+    /// Whether a conversation, all its members given, is one to select. A
+    /// conversation counts as unread, or starred, when any member is, as
+    /// its row shows it.
+    fn matches(self, members: &[Message]) -> bool {
+        let unread = members.iter().any(|m| m.unread);
+        let starred = members.iter().any(|m| m.starred);
+        match self {
+            CheckFilter::Read => !unread,
+            CheckFilter::Unread => unread,
+            CheckFilter::Starred => starred,
+            CheckFilter::Unstarred => !starred,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum MessageListInput {
-    /// The header's quick filter (#97): scope the list to unread mail.
-    SetUnreadOnly(bool),
-    /// The header's starred quick filter.
-    SetStarredOnly(bool),
+    /// The header's quick filters (#97, #441), with your contacts'
+    /// addresses when "From Contacts" is among them.
+    SetQuickFilters {
+        filters: QuickFilters,
+        contacts: Option<std::sync::Arc<std::collections::HashSet<String>>>,
+    },
     SetMessages { messages: Vec<Message> },
     /// Merge more indexed messages into the current list (background backfill),
     /// preserving the current search query and view.
@@ -874,8 +1225,28 @@ pub enum MessageListInput {
     MoveCursor(i32),
     /// Open the row the cursor is on in the reader (Gmail's o, #392).
     OpenCursor,
+    /// A click in the list: the keyboard cursor's outline goes, since the
+    /// pointer, not j or k, says where the user is now. A plain click also
+    /// ends Gmail's checking; `extend` is a Ctrl or Shift click, which adds
+    /// to it.
+    PointerPressed { extend: bool },
+    /// File the selected rows into `dest`, a conversation's row with all
+    /// of it (the picker's answer for a selection, #392).
+    MoveSelectedTo { account_id: u32, dest: String },
+    /// Close the open conversation and leave the keyboard on its row
+    /// (Gmail's u and Esc, and after Shift+U or _, #392).
+    CloseOpen,
+    /// Open the next (or previous) conversation, from the one open, while
+    /// the keyboard stays in the reader (Gmail's j/k there, #392).
+    StepConversation(i32),
     /// Select every row shown (Gmail's * a).
     SelectAllShown,
+    /// Select the conversations shown that match, and only those (Gmail's
+    /// * r, * u, * s and * t).
+    SelectWhere(CheckFilter),
+    /// Which way to go on when the open row leaves the list: down (1) or
+    /// up (-1). Gmail's ] and [ archive and go on that way (#392).
+    SetNavDirection(i32),
     /// The addresses you send from, for leaving your own replies out of a
     /// conversation's nested rows (#388).
     SetOwnAddresses(std::collections::HashSet<String>),
@@ -903,6 +1274,10 @@ pub enum MessageListInput {
     SetColumns(Vec<crate::config::ListColumn>),
     /// Show the column headings over a single-line list, or not (#334).
     SetHeadings(bool),
+    /// Divide a list sorted by date under Today, Yesterday and so on (#435).
+    SetGroupByDate(bool),
+    /// Put a card's tags and labels on a line under its text (#374).
+    SetPillsBelow(bool),
     /// A column's heading was clicked: sort by it, or the other way (#334).
     SortByColumn(crate::config::ListColumn),
     /// A heading's edge was dragged to `width`, or double-clicked (`None`:
@@ -912,6 +1287,10 @@ pub enum MessageListInput {
     SetColumnWidths(std::collections::HashMap<crate::config::ListColumn, i32>),
     /// Fill the headings again, once a handler that set them going is over.
     RefreshHeadings,
+    /// Scroll a single line wider than the pane, or fit its columns (#443).
+    SetColumnScroll(bool),
+    /// Keep the search toolbar open (#446).
+    SetSearchPinned(bool),
     /// The rows are this wide now.
     PaneWidth(i32),
     /// Each account's name for the Account column, and which accounts are
@@ -934,7 +1313,7 @@ pub enum MessageListInput {
     SetScope(SearchScope),
     /// Replace the cross-folder search pool (all folders, all accounts). Sent by
     /// the app when a search begins; cleared to empty when it ends.
-    SetSearchPool(Vec<Message>),
+    SetSearchPool(Vec<Message>, std::collections::HashMap<(u32, u32), PoolFolder>),
     /// The reader's selection: mirror whichever of these the list has rows for,
     /// so everything that acts on the list's selection acts on the messages the
     /// user pointed at. The reader is already showing them, so this must not
@@ -972,6 +1351,9 @@ pub enum MessageListInput {
     ReclaimFocus,
     /// Put the cursor in the search field.
     FocusSearch,
+    /// Showcase captures (#374): open the search, pick the scope by its
+    /// place in the dropdown and type the text.
+    ShowcaseSearch(String, u32),
     /// Close and clear the search toolbar (#102): Esc, empty focus-out, or
     /// the header button while open.
     CloseSearch,
@@ -1000,7 +1382,9 @@ pub enum MessageListInput {
     RowAction { action: RowAction, message: Box<Message> },
     SetStarred { slot: (u32, u32, u32), starred: bool },
     /// A message's keywords changed (a tag put on or taken off, #71).
-    SetKeywords { slot: (u32, u32, u32), keywords: Vec<String> },
+    /// A message's keywords and Gmail labels changed (a tag put on or
+    /// taken off, #374).
+    SetKeywords { slot: (u32, u32, u32), keywords: Vec<String>, labels: Vec<String> },
     /// The tag definitions changed: rows rebuild their chips.
     SetTags(Vec<crate::config::Tag>),
     /// A row's tag menu toggled a tag — passed up to the app.
@@ -1074,6 +1458,9 @@ pub enum MessageListOutput {
     /// Every selected message, whenever that changes — the reader outlines the
     /// matching cards.
     SelectionKeys(Vec<(u32, u32)>),
+    /// Gmail's o or Enter opened a row (#392); `already_open` when it was
+    /// the one already in the reader, so no new selection follows.
+    OpenedByKey { already_open: bool },
     /// The header-bar count changed — app.rs shows it.
     CountChanged(String),
     /// A row was double-clicked: open it in its own window. `thread` is the
@@ -1111,6 +1498,11 @@ pub enum MessageListOutput {
     /// The viewed message was removed and no row remains to advance to, so the
     /// reader should clear.
     SelectionCleared,
+    /// The selected rows' messages to file into `dest` (#392).
+    MoveMessages { account_id: u32, dest: String, messages: Vec<Message> },
+    /// How many rows Gmail's x has checked (#392), whenever that changes;
+    /// `None` once checking ends.
+    Checked(Option<usize>),
     /// The search field became active (non-empty) or inactive (empty), so the app
     /// can supply or drop the cross-folder search pool.
     SearchActive(bool),
@@ -1119,6 +1511,8 @@ pub enum MessageListOutput {
     SortChanged(&'static str),
     /// A column was resized by its heading (#334): the widths to keep.
     ColumnWidths(std::collections::HashMap<crate::config::ListColumn, i32>),
+    /// Customize Columns… from the headings' right-click menu (#443).
+    CustomizeColumns,
 }
 
 #[relm4::component(pub)]
@@ -1143,7 +1537,7 @@ impl SimpleComponent for MessageList {
                 gtk::Revealer {
                     set_transition_type: gtk::RevealerTransitionType::SlideDown,
                     #[watch]
-                    set_reveal_child: model.search_open,
+                    set_reveal_child: model.search_open || model.search_pinned,
 
                 gtk::Box {
                     set_spacing: 6,
@@ -1173,21 +1567,12 @@ impl SimpleComponent for MessageList {
                         },
                     },
 
-                    // Scope picker: 0 = All folders (default), 1 = This folder.
-                    #[name = "scope_dropdown"]
-                    gtk::DropDown {
+                    // The scope picker; its popover is built in `init`
+                    // (`ScopePicker`).
+                    #[name = "scope_button"]
+                    gtk::MenuButton {
                         set_valign: gtk::Align::Center,
                         set_tooltip_text: Some(i18n("Choose which folders to search").as_str()),
-                        set_model: Some(&gtk::StringList::new(&[i18n("All folders").as_str(), i18n("This folder").as_str()])),
-                        set_selected: 0,
-                        connect_selected_notify[sender] => move |dd| {
-                            let scope = if dd.selected() == 0 {
-                                SearchScope::AllFolders
-                            } else {
-                                SearchScope::ThisFolder
-                            };
-                            sender.input(MessageListInput::SetScope(scope));
-                        },
                     },
                 },
                 },
@@ -1197,7 +1582,7 @@ impl SimpleComponent for MessageList {
             gtk::Revealer {
                 set_transition_type: gtk::RevealerTransitionType::SlideDown,
                 #[watch]
-                set_reveal_child: model.selection_count > 1,
+                set_reveal_child: model.selection_count > 1 || (model.checking && model.selection_count > 0),
 
                 // A revealer sliding *down* still reserves its child's width while
                 // collapsed, so this bar of seven buttons was setting the whole
@@ -1314,13 +1699,23 @@ impl SimpleComponent for MessageList {
 
             // The single line's column headings (#334), filled by
             // `sync_headings`; a click on one sorts by its column.
+            #[name = "headings_area"]
             gtk::Box {
                 add_css_class: "list-headings-bar",
                 #[watch]
                 set_visible: model.single_line && model.headings,
-                #[local_ref]
-                headings_bar -> gtk::Box {
+                // Scrolled sideways with the rows, never by itself: no bar
+                // of its own, its place set from the list's (#443).
+                #[name = "headings_scroller"]
+                gtk::ScrolledWindow {
                     set_hexpand: true,
+                    set_hscrollbar_policy: gtk::PolicyType::External,
+                    set_vscrollbar_policy: gtk::PolicyType::Never,
+                    set_propagate_natural_height: true,
+                    #[local_ref]
+                    headings_bar -> gtk::Box {
+                        set_hexpand: true,
+                    },
                 },
             },
 
@@ -1335,7 +1730,11 @@ impl SimpleComponent for MessageList {
                     // which pushed it past half of a 1920px screen — at which point
                     // GNOME refuses to tile the window to the left/right edge. Rows
                     // ellipsize, so a narrow pane clips gracefully instead.
-                    set_hscrollbar_policy: gtk::PolicyType::External,
+                    // Automatic does not propagate it either: a single line
+                    // too wide for the pane scrolls to its columns past the
+                    // edge (#443), with a bar that says so.
+                    #[watch]
+                    set_hscrollbar_policy: if model.single_line && model.column_scroll { gtk::PolicyType::Automatic } else { gtk::PolicyType::External },
                     // The pane's own floor, now that rows no longer set one: room
                     // for a row's full actions palette (avatar + dot + the reserved
                     // actions line), so opening the palette never needs to clip —
@@ -1380,8 +1779,14 @@ impl SimpleComponent for MessageList {
                 // "No message selected", so the two placeholders match.
                 add_overlay = &adw::StatusPage {
                     set_icon_name: Some("mail-inbox-symbolic"),
-                    set_title: &i18n("No Messages"),
-                    set_description: Some(i18n("There's nothing here right now.").as_str()),
+                    #[watch]
+                    set_title: &(if model.quick.is_empty() { i18n("No Messages") } else { i18n("No Matching Messages") }),
+                    #[watch]
+                    set_description: Some(if model.quick.is_empty() {
+                        i18n("There's nothing here right now.")
+                    } else {
+                        i18n("No message here passes the filters.")
+                    }.as_str()),
                     #[watch]
                     set_visible: model.is_empty_state(),
                 },
@@ -1415,10 +1820,13 @@ impl SimpleComponent for MessageList {
             late_select: None,
             all: Vec::new(),
             search_pool: Vec::new(),
+            pool_folders: Default::default(),
             scope: SearchScope::AllFolders,
             search_entry: None,
+            scope_picker: None,
             search_open: false,
             search_closed_at: None,
+            search_pinned: false,
             shown: Vec::new(),
             total_matches: 0,
             index_complete: true,
@@ -1454,6 +1862,7 @@ impl SimpleComponent for MessageList {
             selected_ids: Vec::new(),
             emitted_thread: Vec::new(),
             selection_count: 0,
+            checking: false,
             nav_direction: 1,
             from_reader: 0,
             reader_keys: Vec::new(),
@@ -1469,8 +1878,8 @@ impl SimpleComponent for MessageList {
             nested: std::collections::HashMap::new(),
             scroller: None,
             sort: SortOrder::DateNewest,
-            unread_only: false,
-            starred_only: false,
+            quick: QuickFilters::default(),
+            contact_addresses: None,
             last_count: String::new(),
             threading: true,
             thread_expansion: true,
@@ -1480,9 +1889,13 @@ impl SimpleComponent for MessageList {
             graph_accounts: std::collections::HashSet::new(),
             graph_in_view: false,
             sort_reversed: false,
+            group_by_date: crate::config::load_privacy().list_group_by_date,
+            day_headings: false,
+            pills_below: crate::config::load_privacy().list_pills_below,
             headings: false,
             headings_bar: gtk::Box::new(gtk::Orientation::Horizontal, 8),
             widths: std::collections::HashMap::new(),
+            column_scroll: false,
             pane_width: 0,
             heading_bins: Default::default(),
             bulk_tag_btn: gtk::Button::new(),
@@ -1493,8 +1906,41 @@ impl SimpleComponent for MessageList {
         let widgets = view_output!();
         model.scroller = Some(widgets.scroller.clone());
         {
-            // The rows' width, which the single line's columns fit into: the
-            // view's page across, set as it is allocated.
+            // The headings follow the rows sideways, and a scroll over the
+            // headings moves the rows. Setting the value it already has
+            // emits nothing, so the two do not chase each other.
+            let rows = widgets.scroller.hadjustment();
+            let heads = widgets.headings_scroller.hadjustment();
+            let h = heads.clone();
+            rows.connect_value_changed(move |a| h.set_value(a.value()));
+            let r = rows.clone();
+            heads.connect_value_changed(move |a| r.set_value(a.value()));
+            // The headings take their full width a frame after the rows
+            // may have scrolled: put them back in step then.
+            let r = rows.clone();
+            heads.connect_changed(move |a| a.set_value(r.value()));
+        }
+        {
+            // A right-click on the headings offers the way to the columns'
+            // settings (#443).
+            let click = gtk::GestureClick::new();
+            click.set_button(3);
+            let area = widgets.headings_area.clone();
+            let s = sender.clone();
+            click.connect_pressed(move |g, _, x, y| {
+                g.set_state(gtk::EventSequenceState::Claimed);
+                let s = s.clone();
+                let entry = crate::ui::context_menu::MenuEntry::new(i18n("Customize Columns…"), move || {
+                    let _ = s.output(MessageListOutput::CustomizeColumns);
+                })
+                .icon("view-list-bullet-symbolic");
+                crate::ui::context_menu::show_context_menu(&area, x, y, vec![vec![entry]]);
+            });
+            widgets.headings_area.add_controller(click);
+        }
+        {
+            // The rows' width, which fitted columns fit into: the view's
+            // page across, set as it is allocated.
             let input = sender.input_sender().clone();
             widgets.scroller.hadjustment().connect_notify_local(Some("page-size"), move |adj, _| {
                 let _ = input.send(MessageListInput::PaneWidth(adj.page_size() as i32));
@@ -1527,33 +1973,7 @@ impl SimpleComponent for MessageList {
         model.sync_look();
         model.search_entry = Some(widgets.search_entry.clone());
 
-        // The scope picker sizes itself to its widest entry ("All folders"), which
-        // made it — not the messages — the narrowest the list could ever be (#29).
-        // An ellipsizing label on the button lets it give way; the drop-down list
-        // keeps its own factory, so the choices are still spelled out in full.
-        let button_factory = gtk::SignalListItemFactory::new();
-        button_factory.connect_setup(|_, item| {
-            let label = gtk::Label::new(None);
-            label.set_xalign(0.0);
-            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            if let Some(item) = item.downcast_ref::<gtk::ListItem>() {
-                item.set_child(Some(&label));
-            }
-        });
-        button_factory.connect_bind(|_, item| {
-            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-                return;
-            };
-            let text = item
-                .item()
-                .and_downcast::<gtk::StringObject>()
-                .map(|s| s.string().to_string())
-                .unwrap_or_default();
-            if let Some(label) = item.child().and_downcast::<gtk::Label>() {
-                label.set_label(&text);
-            }
-        });
-        widgets.scope_dropdown.set_factory(Some(&button_factory));
+        model.scope_picker = Some(ScopePicker::new(&widgets.scope_button, sender.input_sender()));
 
         schedule_midnight_refresh(&sender);
 
@@ -1595,7 +2015,7 @@ impl SimpleComponent for MessageList {
                 self.all.clear();
                 self.drop_threads();
                 self.loaded = false;
-                self.clear_search();
+                self.clear_search(&sender);
                 // Queued: when the folder's list follows in the same pass
                 // (served from cache), the old rows are torn down once, for
                 // the new ones, not first for nothing.
@@ -1606,7 +2026,10 @@ impl SimpleComponent for MessageList {
                 self.switched = true;
                 self.window = LIST_WINDOW;
                 self.late_select = None;
-                self.clear_search();
+                if std::mem::take(&mut self.checking) {
+                    let _ = sender.output(MessageListOutput::Checked(None));
+                }
+                self.clear_search(&sender);
                 self.emitted_thread.clear();
                 // However the new view's list arrives, a rebuild follows, and
                 // the top is scrolled to then, not over the old rows first.
@@ -1827,6 +2250,12 @@ impl SimpleComponent for MessageList {
             MessageListInput::SetSingleLine(on) => {
                 if self.single_line != on {
                     self.single_line = on;
+                    // The date headings line up with a single line's text.
+                    if on {
+                        self.list_view.add_css_class("single-line");
+                    } else {
+                        self.list_view.remove_css_class("single-line");
+                    }
                     self.sync_look();
                 }
             }
@@ -1959,19 +2388,25 @@ impl SimpleComponent for MessageList {
                 self.scroll_top();
             }
             MessageListInput::SetScope(scope) => {
+                if let Some(picker) = &self.scope_picker {
+                    picker.sync(scope);
+                }
                 if self.scope != scope {
                     self.scope = scope;
                     // Scope only affects the view while a query is present.
                     if self.searching() {
+                        self.sync_look();
                         self.rebuild();
                         self.scroll_top();
                     }
                 }
             }
-            MessageListInput::SetSearchPool(pool) => {
+            MessageListInput::SetSearchPool(pool, folders) => {
                 self.search_pool = pool.into_iter().map(Rc::new).collect();
+                self.pool_folders = Rc::new(folders);
                 self.drop_threads();
-                if self.searching() && self.scope == SearchScope::AllFolders {
+                self.sync_look();
+                if self.searching() && self.scope != SearchScope::ThisFolder {
                     self.rebuild();
                 }
             }
@@ -2045,6 +2480,13 @@ impl SimpleComponent for MessageList {
                     self.late_select = None;
                 }
                 let _ = sender.output(MessageListOutput::SelectionKeys(keys.clone()));
+                if self.checking {
+                    // Checked rows are not opened, one or many (#392).
+                    self.selected_id = None;
+                    let _ = sender.output(MessageListOutput::Checked(Some(keys.len())));
+                    self.selected_ids = keys;
+                    return;
+                }
                 match keys.as_slice() {
                     [] => self.selected_id = None,
                     [key] => {
@@ -2092,17 +2534,21 @@ impl SimpleComponent for MessageList {
                 // The bulk bar's spam button is one button: in Junk it means
                 // the reverse.
                 let action = if self.in_junk && action == BulkAction::Spam { BulkAction::NotSpam } else { action };
-                let messages = self.selected_messages();
+                let rows = self.selected_messages();
                 // Likewise the star: it clears a selection that is starred
                 // throughout, or it could never be taken off again (#313).
                 let action = if action == BulkAction::Flag
-                    && !messages.is_empty()
-                    && messages.iter().all(|m| m.starred)
+                    && !rows.is_empty()
+                    && rows.iter().all(|m| m.starred)
                 {
                     BulkAction::Unflag
                 } else {
                     action
                 };
+                // A conversation's row stands for all of it, as it does for a
+                // lone Delete: marking several read reached only the first
+                // message of each (#392). A star goes on the row's message.
+                let messages = if action == BulkAction::Flag { rows } else { self.selected_conversations() };
                 if !messages.is_empty() {
                     let _ = sender.output(MessageListOutput::Bulk { action, messages });
                 }
@@ -2128,11 +2574,18 @@ impl SimpleComponent for MessageList {
                     .map(|&p| p as i64)
                     .unwrap_or(if delta > 0 { -1 } else { self.shown.len() as i64 });
                 let next = (current + delta as i64).clamp(0, self.shown.len() as i64 - 1) as usize;
+                self.shared.set_cursor(None);
                 self.shared.selection.select_item(next as u32, true);
+                self.stop_checking(&sender);
                 self.focus_row(next);
             }
 
-            MessageListInput::SetGmailKeys(on) => self.gmail_keys = on,
+            MessageListInput::SetGmailKeys(on) => {
+                self.gmail_keys = on;
+                if !on {
+                    self.stop_checking(&sender);
+                }
+            }
             MessageListInput::MoveCursor(delta) => {
                 if self.shown.is_empty() {
                     return;
@@ -2142,24 +2595,110 @@ impl SimpleComponent for MessageList {
                 }
                 // From the row the keyboard is on, else the open one, else
                 // the top or the bottom.
-                let current = self
-                    .cursor_position()
-                    .or_else(|| self.selected_positions().first().copied())
-                    .map(|p| p as i64)
-                    .unwrap_or(if delta > 0 { -1 } else { self.shown.len() as i64 });
-                let next = (current + delta as i64).clamp(0, self.shown.len() as i64 - 1) as usize;
+                let from = self.cursor_position().or_else(|| self.selected_positions().first().copied());
+                let next = self.conversation_step(from, delta);
                 self.focus_row(next);
+                // Drawn by the row itself: the list's focus ring is off, and
+                // the window's focus-visible flag is not reliably set by a key
+                // a shortcut handler consumed.
+                self.shared.set_cursor(self.shown.get(next).map(|m| (m.account_id, m.id)));
             }
             MessageListInput::OpenCursor => {
+                // Several checked are for an action, not for reading: which
+                // one to open is anyone's guess (#392).
+                if self.checking && self.selection_count > 1 {
+                    return;
+                }
                 let Some(pos) = self.cursor_position().or_else(|| self.selected_positions().first().copied()) else {
                     return;
                 };
+                self.shared.set_cursor(None);
+                let already_open = !self.checking && self.selected_positions() == [pos];
                 self.shared.selection.select_item(pos as u32, true);
+                self.stop_checking(&sender);
                 self.focus_row(pos);
+                let _ = sender.output(MessageListOutput::OpenedByKey { already_open });
+            }
+            MessageListInput::PointerPressed { extend } => {
+                self.shared.set_cursor(None);
+                if !extend {
+                    self.stop_checking(&sender);
+                }
+            }
+            MessageListInput::MoveSelectedTo { account_id, dest } => {
+                let messages = self.selected_conversations();
+                if !messages.is_empty() {
+                    let _ = sender.output(MessageListOutput::MoveMessages { account_id, dest, messages });
+                }
+            }
+            MessageListInput::CloseOpen => {
+                // Only an open row closes: with rows checked, or none
+                // selected, the keyboard just comes back to the list.
+                let selected = self.selected_positions();
+                let [pos] = selected[..] else {
+                    sender.input(MessageListInput::FocusList);
+                    return;
+                };
+                if self.checking {
+                    sender.input(MessageListInput::FocusList);
+                    return;
+                }
+                self.selected_id = None;
+                self.selected_ids.clear();
+                self.selection_count = 0;
+                self.shared.selection.unselect_all();
+                self.focus_row(pos);
+                // The cursor stays on the row just read, so j, k and o carry
+                // on from there.
+                self.shared.set_cursor(self.shown.get(pos).map(|m| (m.account_id, m.id)));
+                let _ = sender.output(MessageListOutput::SelectionCleared);
+            }
+            MessageListInput::StepConversation(delta) => {
+                if self.shown.is_empty() {
+                    return;
+                }
+                if delta != 0 {
+                    self.nav_direction = delta.signum();
+                }
+                let from = self.selected_positions().first().copied();
+                let next = self.conversation_step(from, delta);
+                if from == Some(next) {
+                    return;
+                }
+                self.shared.set_cursor(None);
+                // Selecting opens it; the keyboard stays where it is, in the
+                // reader, so the next j or k goes on from there.
+                self.shared.selection.select_item(next as u32, true);
+                self.list_view.scroll_to(next as u32, gtk::ListScrollFlags::NONE, None);
+                self.reveal_first_heading(next);
             }
             MessageListInput::SelectAllShown => {
                 if !self.shown.is_empty() {
+                    // Checked, as Gmail's * a checks them: nothing opens.
+                    self.checking = true;
+                    self.selected_id = None;
                     self.shared.selection.select_all();
+                    sender.input(MessageListInput::SelectionChanged);
+                }
+            }
+            MessageListInput::SelectWhere(filter) => {
+                let is_child = |p: usize| self.shared.model.row(p).is_some_and(|r| r.meta.is_child);
+                let picked = gtk::Bitset::new_empty();
+                for (pos, m) in self.shown.iter().enumerate() {
+                    if !is_child(pos) && filter.matches(&self.conversation_for(m).0) {
+                        picked.add(pos as u32);
+                    }
+                }
+                // Checked, as with * a; none matching leaves none checked.
+                self.checking = true;
+                self.selected_id = None;
+                let all = gtk::Bitset::new_range(0, self.shown.len() as u32);
+                self.shared.selection.set_selection(&picked, &all);
+                sender.input(MessageListInput::SelectionChanged);
+            }
+            MessageListInput::SetNavDirection(delta) => {
+                if delta != 0 {
+                    self.nav_direction = delta.signum();
                 }
             }
             MessageListInput::ToggleSelection => {
@@ -2168,23 +2707,37 @@ impl SimpleComponent for MessageList {
                     return;
                 };
                 let selection = &self.shared.selection;
-                if selection.is_selected(pos as u32) {
+                if self.gmail_keys && !self.checking {
+                    // Gmail's x checks a conversation without opening it
+                    // (#392): the one open closes, and the checks start
+                    // from this row.
+                    self.checking = true;
+                    self.selected_id = None;
+                    selection.select_item(pos as u32, true);
+                } else if selection.is_selected(pos as u32) {
                     selection.unselect_item(pos as u32);
                 } else {
                     selection.select_item(pos as u32, false);
                 }
-            }
-
-            MessageListInput::SetUnreadOnly(on) => {
-                if self.unread_only != on {
-                    self.unread_only = on;
-                    self.rebuild();
+                if self.checking {
+                    // The keyboard stays on the row, for the next j, k or x.
+                    self.focus_row(pos);
+                    self.shared.set_cursor(self.shown.get(pos).map(|m| (m.account_id, m.id)));
+                    // Told even when GTK's selection did not change, as when
+                    // the row checked is the one that was open.
+                    sender.input(MessageListInput::SelectionChanged);
                 }
             }
 
-            MessageListInput::SetStarredOnly(on) => {
-                if self.starred_only != on {
-                    self.starred_only = on;
+            MessageListInput::SetQuickFilters { filters, contacts } => {
+                let contacts_changed = filters.has(QuickFilter::Contacts)
+                    && match (&self.contact_addresses, &contacts) {
+                        (Some(a), Some(b)) => !std::sync::Arc::ptr_eq(a, b),
+                        (a, b) => a.is_some() != b.is_some(),
+                    };
+                self.contact_addresses = contacts;
+                if self.quick != filters || contacts_changed {
+                    self.quick = filters;
                     self.rebuild();
                 }
             }
@@ -2195,6 +2748,7 @@ impl SimpleComponent for MessageList {
                 // from what you were reading), so it's allowed to scroll.
                 if !self.shown.is_empty() {
                     let pos = self.selected_positions().first().copied().unwrap_or(0);
+                    self.shared.set_cursor(None);
                     self.focus_row(pos);
                 }
             }
@@ -2210,7 +2764,46 @@ impl SimpleComponent for MessageList {
                 self.hide_focus_ring();
             }
 
+            MessageListInput::ShowcaseSearch(text, scope) => {
+                self.search_open = true;
+                if let Some(scope) = SearchScope::ALL.get(scope as usize) {
+                    sender.input(MessageListInput::SetScope(*scope));
+                }
+                if let Some(entry) = &self.search_entry {
+                    entry.set_text(&text);
+                }
+                // HYLKI_SHOWCASE_SCOPE_MENU=<png> opens the scope popover and
+                // captures it.
+                if let (Ok(path), Some(picker)) = (std::env::var("HYLKI_SHOWCASE_SCOPE_MENU"), &self.scope_picker) {
+                    picker.button.popup();
+                    if let Some(popover) = picker.button.popover() {
+                        gtk::glib::timeout_add_seconds_local_once(1, move || {
+                            crate::app::showcase_capture(popover.upcast_ref(), &path);
+                        });
+                    }
+                    // HYLKI_SHOWCASE_SCOPE_INFO=<png> opens the first scope's
+                    // info popover on top and captures that.
+                    if let (Ok(path), Some(info)) = (std::env::var("HYLKI_SHOWCASE_SCOPE_INFO"), picker.infos.first()) {
+                        let info = info.clone();
+                        gtk::glib::timeout_add_seconds_local_once(2, move || {
+                            info.popup();
+                            if let Some(popover) = info.popover() {
+                                gtk::glib::timeout_add_seconds_local_once(1, move || {
+                                    crate::app::showcase_capture(popover.upcast_ref(), &path);
+                                });
+                            }
+                        });
+                    }
+                }
+            }
             MessageListInput::FocusSearch => {
+                // A field that is always there has nothing to open or close.
+                if self.search_pinned {
+                    if let Some(entry) = &self.search_entry {
+                        entry.grab_focus();
+                    }
+                    return;
+                }
                 // Toggle (#102): the header button closes an open search too.
                 if self.search_open {
                     sender.input(MessageListInput::CloseSearch);
@@ -2237,9 +2830,25 @@ impl SimpleComponent for MessageList {
             }
 
             MessageListInput::CloseSearch => {
+                if self.search_pinned {
+                    // Esc in the field hands the keyboard back to the list;
+                    // an empty field losing focus has gone somewhere already.
+                    let had_focus = self.search_entry.as_ref().is_some_and(|e| e.has_focus() || e.focus_child().is_some());
+                    if !self.query.is_empty() {
+                        self.clear_search(&sender);
+                        self.rebuild();
+                        self.scroll_top();
+                    }
+                    if had_focus {
+                        self.preserving_scroll(|this| {
+                            this.list_view.grab_focus();
+                        });
+                    }
+                    return;
+                }
                 self.search_open = false;
                 self.search_closed_at = Some(std::time::Instant::now());
-                self.clear_search();
+                self.clear_search(&sender);
                 self.rebuild();
             }
 
@@ -2296,11 +2905,17 @@ impl SimpleComponent for MessageList {
                 // The rows follow every step; the headings are left alone
                 // while their handle is held, as rebuilding them would drop
                 // it mid-drag. It has moved its own heading already.
+                let min_width = self.row_min_width();
                 let fitted = self.fitted_widths();
                 for (c, bin) in self.heading_bins.borrow().iter() {
                     bin.set_width(fitted.get(c).copied().unwrap_or_else(|| crate::ui::message_row::default_width(*c)));
                 }
-                self.shared.look.borrow_mut().widths = fitted;
+                self.headings_bar.set_size_request(min_width, -1);
+                {
+                    let mut look = self.shared.look.borrow_mut();
+                    look.widths = fitted;
+                    look.min_width = min_width;
+                }
                 self.shared.refresh_all();
                 if done {
                     let input = self.shared.input.clone();
@@ -2317,9 +2932,23 @@ impl SimpleComponent for MessageList {
                 }
             }
             MessageListInput::RefreshHeadings => self.sync_headings(),
+            MessageListInput::SetSearchPinned(on) => {
+                self.search_pinned = on;
+                // Unpinned, it stays only while it holds a search.
+                if !on {
+                    self.search_open = !self.query.is_empty();
+                }
+            }
+            MessageListInput::SetColumnScroll(on) => {
+                if self.column_scroll != on {
+                    self.column_scroll = on;
+                    self.sync_look();
+                }
+            }
             MessageListInput::PaneWidth(width) => {
                 if self.pane_width != width {
-                    let before = self.single_line.then(|| self.fitted_widths());
+                    let fits = self.single_line && !self.column_scroll;
+                    let before = fits.then(|| self.fitted_widths());
                     self.pane_width = width;
                     if before.is_some_and(|b| b != self.fitted_widths()) {
                         self.sync_look();
@@ -2330,8 +2959,20 @@ impl SimpleComponent for MessageList {
                 self.headings = on;
                 self.sync_headings();
             }
+            MessageListInput::SetGroupByDate(on) => {
+                if self.group_by_date != on {
+                    self.group_by_date = on;
+                    self.queue_rebuild(true);
+                }
+            }
+            MessageListInput::SetPillsBelow(on) => {
+                if self.pills_below != on {
+                    self.pills_below = on;
+                    self.sync_look();
+                }
+            }
             MessageListInput::SortByColumn(column) => {
-                let Some(order) = column_sort(column, self.show_recipient) else { return };
+                let order = column_sort(column, self.show_recipient);
                 match (order, self.sort) {
                     // Date has an order each way of its own.
                     (SortOrder::DateNewest, SortOrder::DateNewest) => self.sort = SortOrder::DateOldest,
@@ -2381,8 +3022,9 @@ impl SimpleComponent for MessageList {
             }
             MessageListInput::RowActivated(index) => {
                 // With Gmail's keys, Enter on the row the cursor reached opens
-                // it here, as o does; a row already open goes to a window.
-                if self.gmail_keys && !self.shared.selection.is_selected(index as u32) {
+                // it here, as o does, checked or not (#392); a row already
+                // open goes to a window.
+                if self.gmail_keys && (self.checking || !self.shared.selection.is_selected(index as u32)) {
                     sender.input(MessageListInput::OpenCursor);
                     return;
                 }
@@ -2403,8 +3045,14 @@ impl SimpleComponent for MessageList {
                 self.update_message(|m| thread_slot(m) == slot, |m| m.starred = starred);
                 self.refresh_thread_head(slot);
             }
-            MessageListInput::SetKeywords { slot, keywords } => {
-                self.update_message(|m| thread_slot(m) == slot, |m| m.keywords = keywords.clone());
+            MessageListInput::SetKeywords { slot, keywords, labels } => {
+                self.update_message(
+                    |m| thread_slot(m) == slot,
+                    |m| {
+                        m.keywords = keywords.clone();
+                        m.labels = labels.clone();
+                    },
+                );
             }
             MessageListInput::SetTags(tags) => {
                 if *self.shared.tags.borrow() != tags {
@@ -2447,6 +3095,11 @@ impl SimpleComponent for MessageList {
                     self.shared.model.splice(idx, 1, Vec::new());
                     // No rebuild follows — keep the header count honest.
                     self.total_matches = self.total_matches.saturating_sub(1);
+                }
+                if self.checking {
+                    self.selection_count = self.selected_ids.len();
+                    let _ = sender.output(MessageListOutput::SelectionKeys(self.selected_ids.clone()));
+                    let _ = sender.output(MessageListOutput::Checked(Some(self.selection_count)));
                 }
 
                 if was_viewed {
@@ -2510,9 +3163,23 @@ impl SimpleComponent for MessageList {
                     self.shared.model.splice(idx, end - idx, Vec::new());
                 }
                 self.selection_count = self.selected_ids.len();
+                if self.checking {
+                    let _ = sender.output(MessageListOutput::SelectionKeys(self.selected_ids.clone()));
+                    let _ = sender.output(MessageListOutput::Checked(Some(self.selection_count)));
+                }
                 // Keep the header count honest; no rebuild follows.
                 self.total_matches = self.total_matches.saturating_sub(shown_before - self.shown.len());
-                if was_viewed {
+                if self.checking {
+                    // Checked rows deleted (#392): the keyboard goes to the
+                    // conversation above them, else the one below, outlined
+                    // but neither checked nor opened.
+                    let cursor_gone = self.shared.cursor().is_some_and(|(_, i)| set.contains(&i));
+                    if let Some(idx) = first_removed.filter(|_| (cursor_gone || had_focus) && !self.shown.is_empty()) {
+                        let pos = if idx > 0 { self.conversation_step(Some(idx), -1) } else { 0 };
+                        self.focus_row(pos);
+                        self.shared.set_cursor(self.shown.get(pos).map(|m| (m.account_id, m.id)));
+                    }
+                } else if was_viewed {
                     match first_removed {
                         Some(idx) if !self.shown.is_empty() => {
                             let next = self.advance_index(idx);
@@ -2612,6 +3279,7 @@ impl SimpleComponent for MessageList {
                 }
                 self.late_select = None;
                 let asked = key;
+                self.stop_checking(&sender);
                 // A row further down than the window reaches comes on screen.
                 if let Some(at) = self.tail.iter().position(|r| (r.msg.account_id, r.msg.id) == key) {
                     self.grow_window(at + 1);
@@ -2914,11 +3582,10 @@ impl MessageList {
                 section.push(item(RowAction::Delete, &i18n("Delete"), "user-trash-symbolic"));
                 section
             },
-            vec![item(
-                RowAction::AddContact,
-                &i18n("Add Sender to Contacts"),
-                "contact-new-symbolic",
-            )],
+            vec![
+                item(RowAction::AddContact, &i18n("Add Sender to Contacts"), "contact-new-symbolic"),
+                item(RowAction::CreateFilter, &i18n("Create Filter from Message…"), "filter-folder-symbolic"),
+            ],
             vec![
                 item(RowAction::ViewSource, &i18n("View Source"), "code-symbolic"),
                 item(RowAction::SaveAsFile, &i18n("Save as File…"), "document-save-symbolic"),
@@ -2959,6 +3626,21 @@ impl MessageList {
             .collect()
     }
 
+    /// The selected rows' messages, a conversation's row bringing every
+    /// message of it this folder holds, each once.
+    fn selected_conversations(&self) -> Vec<Message> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for m in self.selected_messages() {
+            for x in self.conversation_for(&m).0 {
+                if seen.insert((x.account_id, x.id)) {
+                    out.push(x);
+                }
+            }
+        }
+        out
+    }
+
     /// Whether every selected message is starred, so the bulk star takes
     /// the stars off rather than adding them.
     fn selection_all_starred(&self) -> bool {
@@ -2969,7 +3651,29 @@ impl MessageList {
     /// Whether any selected message is unread, so the bulk read toggle
     /// marks the selection read rather than unread.
     fn selection_any_unread(&self) -> bool {
-        self.selected_positions().iter().any(|&p| self.shown.get(p).is_some_and(|m| m.unread))
+        // The rows first: asked on every update, and a row's own message
+        // usually answers it.
+        let positions = self.selected_positions();
+        if positions.iter().any(|&p| self.shown.get(p).is_some_and(|m| m.unread)) {
+            return true;
+        }
+        if !self.threading {
+            return false;
+        }
+        // Then the rest of each conversation a row stands for, as
+        // `selected_conversations` gathers it, without copying any.
+        let threads = self.source_threads();
+        let source = self.active_source();
+        positions.iter().filter_map(|&p| self.shown.get(p)).any(|m| {
+            let key = (m.account_id, m.id);
+            !self.nested.contains_key(&key)
+                && heads_its_row(key, &self.msg_thread, &self.thread_members)
+                && threads
+                    .keys
+                    .get(&thread_slot(m))
+                    .and_then(|k| threads.members.get(k))
+                    .is_some_and(|idx| idx.iter().any(|&i| source.get(i).is_some_and(|x| x.unread)))
+        })
     }
 
     /// One toggle per tag for the whole selection (#313). A tag is ticked
@@ -2978,9 +3682,10 @@ impl MessageList {
     fn bulk_tag_entries(&self, sender: &ComponentSender<Self>) -> Vec<MenuEntry> {
         let messages = self.selected_messages();
         let Some(first) = messages.first() else { return Vec::new() };
-        let mut all = first.clone();
-        all.keywords.retain(|k| messages.iter().all(|m| m.has_keyword(k)));
         let tags = self.shared.tags.borrow().clone();
+        let mut all = first.clone();
+        all.keywords = first.tag_keywords(&tags);
+        all.keywords.retain(|k| messages.iter().all(|m| m.tag_keywords(&tags).iter().any(|x| x.eq_ignore_ascii_case(k))));
         let s = sender.clone();
         tag_menu_entries(&tags, &all, move |keyword, add| {
             let _ = s.output(MessageListOutput::SetTagMany { messages: messages.clone(), keyword, add });
@@ -3030,8 +3735,8 @@ impl MessageList {
                     section.push(item(BulkAction::Spam, &i18n("Mark as Spam"), "mail-mark-junk-symbolic"));
                 }
                 {
-                    // Move To… for the whole selection.
-                    let messages = self.selected_messages();
+                    // Move To… for the whole selection, conversations whole.
+                    let messages = self.selected_conversations();
                     let (wx, wy) = self.window_point(x, y);
                     let s = sender.clone();
                     section.push(
@@ -3167,6 +3872,7 @@ impl MessageList {
         // past the old size yet: move the view's own anchor too.
         if self.shared.model.len() > 0 {
             self.list_view.scroll_to(0, gtk::ListScrollFlags::NONE, None);
+            self.reveal_first_heading(0);
         }
     }
 
@@ -3180,6 +3886,7 @@ impl MessageList {
             look.sender_logos = self.sender_logos;
             look.preview_lines = self.preview_lines;
             look.show_subject = self.show_subject;
+            look.pills_below = self.pills_below;
             // The palette hangs under a card; a single line has no room for
             // it, so actions come from the menu, swipes and keys there.
             look.show_palette = self.list_palette && !self.single_line;
@@ -3197,7 +3904,13 @@ impl MessageList {
             look.ringed = if self.colorize { self.account_colors.keys().copied().collect() } else { Default::default() };
             look.face_gen = self.face_gen;
             look.tags_gen = self.tags_gen;
+            look.folder_pills = Rc::new(if self.searching_pool() {
+                self.pool_folders.iter().map(|(k, f)| (*k, f.name.clone())).collect()
+            } else {
+                Default::default()
+            });
             look.widths = self.fitted_widths();
+            look.min_width = self.row_min_width();
         }
         // The rows on screen are about to be another view's, filled anyway.
         if self.switched {
@@ -3208,23 +3921,17 @@ impl MessageList {
         self.sync_headings();
     }
 
-    /// The columns' widths as the rows and the headings draw them (#334):
-    /// as set, unless together they leave the subject too little room, when
-    /// the name columns give way in proportion (the dates keep theirs). Fitted here rather than left to each
-    /// row's box, which shares out a shortage by what that row holds (tags,
-    /// a conversation's count), so a heading and its column would part.
-    fn fitted_widths(&self) -> std::collections::HashMap<crate::config::ListColumn, i32> {
+    /// What a single line's columns take, apart from the subject's room:
+    /// the room the fixed ones need (with the pill's own and the spacing),
+    /// and each column whose width can change, at its own or the one it
+    /// was dragged to.
+    fn column_room(&self) -> (i32, Vec<(crate::config::ListColumn, i32)>) {
         use crate::config::ListColumn as C;
         use crate::ui::message_row::{default_width, resizable};
         /// What a date as wide as its text takes, about.
         const DATE_PX: i32 = 64;
-        /// Room kept for the subject, and for tags beside it.
+        /// Room kept for the subject.
         const SUBJECT_PX: i32 = 100;
-        const TAGS_PX: i32 = 60;
-        let mut widths = self.widths.clone();
-        if self.pane_width <= 0 {
-            return widths;
-        }
         let columns: Vec<C> =
             self.columns.iter().copied().filter(|c| *c != C::Due || self.graph_in_view).collect();
         // The pill's margins and padding, the unread dot and the spacing.
@@ -3232,29 +3939,50 @@ impl MessageList {
         if self.avatars {
             fixed += 16 + 8;
         }
-        let mut wanted: Vec<(C, i32)> = Vec::new();
+        let mut names = Vec::new();
         for c in &columns {
+            let px = self.widths.get(c).copied().unwrap_or_else(|| default_width(*c));
             match c {
                 C::Star | C::Attachment => fixed += 12,
                 C::Importance => fixed += 16,
-                C::Tags => fixed += TAGS_PX,
                 C::Subject => fixed += SUBJECT_PX,
-                // A date cut short says nothing: the names give way instead.
-                C::Due | C::Date => {
-                    let px = widths.get(c).copied().unwrap_or_else(|| default_width(*c));
-                    fixed += if px > 0 { px } else { DATE_PX };
-                }
-                c if resizable(*c) => {
-                    let px = widths.get(c).copied().unwrap_or_else(|| default_width(*c));
-                    wanted.push((*c, px.max(1)));
-                }
+                // A date cut short says nothing: it keeps its width.
+                C::Due | C::Date => fixed += if px > 0 { px } else { DATE_PX },
+                c if resizable(*c) => names.push((*c, px.max(1))),
                 _ => {}
             }
         }
-        let sum: i32 = wanted.iter().map(|(_, px)| px).sum();
+        (fixed, names)
+    }
+
+    /// The narrowest a scrolling single line goes (#443): every column at
+    /// its width and the subject at a little room. A pane narrower than
+    /// that scrolls sideways to the columns past its edge. -1 when the
+    /// columns fit the pane instead.
+    fn row_min_width(&self) -> i32 {
+        if !(self.single_line && self.column_scroll) {
+            return -1;
+        }
+        let (fixed, names) = self.column_room();
+        fixed + names.iter().map(|(_, px)| px).sum::<i32>()
+    }
+
+    /// The columns' widths as the rows and the headings draw them (#334):
+    /// as set, unless the columns fit the pane and together leave the
+    /// subject too little room, when the name and tag columns give way in
+    /// proportion (the dates keep theirs). Fitted here rather than left to
+    /// each row's box, which shares out a shortage by what that row holds,
+    /// so a heading and its column would part.
+    fn fitted_widths(&self) -> std::collections::HashMap<crate::config::ListColumn, i32> {
+        let mut widths = self.widths.clone();
+        if self.column_scroll || !self.single_line || self.pane_width <= 0 {
+            return widths;
+        }
+        let (fixed, names) = self.column_room();
+        let sum: i32 = names.iter().map(|(_, px)| px).sum();
         let room = (self.pane_width - fixed).max(0);
         if sum > room && sum > 0 {
-            for (c, px) in wanted {
+            for (c, px) in names {
                 widths.insert(c, ((px as i64 * room as i64 / sum as i64) as i32).max(40));
             }
         }
@@ -3274,9 +4002,8 @@ impl MessageList {
             .iter()
             .copied()
             .find(|c| match (column_sort(*c, show_recipient), self.sort) {
-                (Some(SortOrder::DateNewest), SortOrder::DateOldest) => true,
-                (Some(order), current) => order == current,
-                (None, _) => false,
+                (SortOrder::DateNewest, SortOrder::DateOldest) => true,
+                (order, current) => order == current,
             })
             .map(|c| (c, self.sort.downwards() != self.sort_reversed));
         let input = self.shared.input.clone();
@@ -3285,7 +4012,6 @@ impl MessageList {
             &self.headings_bar,
             &look,
             sorted,
-            &|c| column_sort(c, show_recipient).is_some(),
             Rc::new(move |c| {
                 let _ = input.send(MessageListInput::SortByColumn(c));
             }),
@@ -3479,6 +4205,7 @@ impl MessageList {
         // The head survives the toggle (only its replies are put in), so its
         // own chevron can rotate open in place.
         self.shared.model.update_row(head_pos, |d| d.meta.expanded = true);
+        let section = self.shared.model.row(head_pos).map(|r| r.section).unwrap_or_default();
         let n = children.len();
         let rows: Vec<Rc<RowData>> = children
             .iter()
@@ -3487,6 +4214,7 @@ impl MessageList {
                 Rc::new(RowData {
                     msg: m.clone(),
                     meta: RowMeta { is_child: true, is_last: i + 1 == n, revealed: true, appear: true, ..Default::default() },
+                    section,
                 })
             })
             .collect();
@@ -3577,7 +4305,7 @@ impl MessageList {
     }
 
     fn searching_pool(&self) -> bool {
-        self.searching() && self.scope == SearchScope::AllFolders && !self.search_pool.is_empty()
+        self.searching() && self.scope != SearchScope::ThisFolder && !self.search_pool.is_empty()
     }
 
     /// The conversations of `active_source`, from the kept copy while the
@@ -3594,16 +4322,23 @@ impl MessageList {
 
     fn search_placeholder(&self) -> String {
         match self.scope {
-            SearchScope::AllFolders => i18n("Search all folders"),
+            SearchScope::AllFolders => i18n("Search all folders but Trash and Junk"),
+            SearchScope::Everywhere => i18n("Search all folders, Trash and Junk too"),
             SearchScope::ThisFolder => i18n("Search this folder"),
         }
     }
 
     /// Drop any active search: clear the query and the entry text so a folder
     /// switch doesn't leave a stale term filtering the new folder.
-    fn clear_search(&mut self) {
+    fn clear_search(&mut self, sender: &ComponentSender<Self>) {
         if self.query.is_empty() {
             return;
+        }
+        // The entry's own change arrives with the query already empty, too
+        // late to see the search end: the cross-folder pool and the account
+        // tint were left behind.
+        if self.searching() {
+            let _ = sender.output(MessageListOutput::SearchActive(false));
         }
         self.query.clear();
         if let Some(e) = &self.search_entry {
@@ -3614,16 +4349,39 @@ impl MessageList {
     /// What the search field and the quick filters let through.
     fn filter(&self) -> impl Fn(&Message) -> bool {
         let q = self.query.to_lowercase();
-        let (unread_only, starred_only) = (self.unread_only, self.starred_only);
+        let quick = QuickFilterContext {
+            filters: self.quick,
+            own: if self.quick.has(QuickFilter::ToMe) { self.own_addresses.clone() } else { Default::default() },
+            contacts: self.contact_addresses.clone().filter(|_| self.quick.has(QuickFilter::Contacts)),
+            tags: if self.quick.has(QuickFilter::Tagged) { self.shared.tags.borrow().clone() } else { Vec::new() },
+            today: if self.quick.has(QuickFilter::Today) { start_of_today() } else { 0 },
+        };
+        // An "All folders" search leaves Trash and Junk out, but for the
+        // folder the list is showing (#374).
+        let left_out: std::collections::HashSet<(u32, u32)> = if self.searching_pool() && self.scope == SearchScope::AllFolders {
+            let here: std::collections::HashSet<(u32, u32)> = self.all.iter().map(|m| (m.account_id, m.folder_id)).collect();
+            self.pool_folders.iter().filter(|(k, f)| f.waste && !here.contains(k)).map(|(k, _)| *k).collect()
+        } else {
+            Default::default()
+        };
         move |m: &Message| {
-            (!unread_only || m.unread)
-                && (!starred_only || m.starred)
+            !left_out.contains(&(m.account_id, m.folder_id))
+                && quick.passes(m)
                 && (q.is_empty()
                     || m.subject.to_lowercase().contains(&q)
                     || m.from_name.to_lowercase().contains(&q)
                     || m.from_addr.to_lowercase().contains(&q)
                     || m.preview.to_lowercase().contains(&q))
         }
+    }
+
+    /// Who took part in a conversation (#334), for its Correspondents
+    /// column: `msgs` and the replies filed in other folders.
+    fn people_of(&self, key: &(u32, String), msgs: &[Rc<Message>]) -> String {
+        let summary = self.threading.then(|| self.thread_summaries.get(key)).flatten();
+        let mut all: Vec<&Message> = msgs.iter().map(|m| &**m).collect();
+        all.extend(summary.iter().flat_map(|s| s.members.iter()));
+        correspondents(&all)
     }
 
     /// One conversation's row: what its head says about it, and its members
@@ -3663,12 +4421,7 @@ impl MessageList {
         // found in another folder — the reply you sent, filed in Sent (#236).
         let newest_here = msgs.last().expect("a group holds at least one message").clone();
         let elsewhere = self.thread_row_newest.then(|| latest_elsewhere(summary, newest_here.timestamp)).flatten();
-        // Who took part (#334), the replies filed in other folders included.
-        let people = self.columns.contains(&crate::config::ListColumn::Correspondents).then(|| {
-            let mut all: Vec<&Message> = msgs.iter().map(|m| &**m).collect();
-            all.extend(summary.iter().flat_map(|s| s.members.iter()));
-            correspondents(&all)
-        });
+        let people = self.columns.contains(&crate::config::ListColumn::Correspondents).then(|| self.people_of(key, &msgs));
         // `expanded_threads` stores toggles away from the default state. With
         // expansion disabled no thread ever opens in the list; the stored
         // toggles survive for when it is re-enabled.
@@ -3819,10 +4572,18 @@ impl MessageList {
         }
         let sort = self.sort;
         let reversed = self.sort_reversed;
-        matches.sort_by(|a, b| {
-            let order = message_cmp(a, b, sort);
-            if reversed { order.reverse() } else { order }
-        });
+        let flip = |order: std::cmp::Ordering| if reversed { order.reverse() } else { order };
+        if sort == SortOrder::Tags {
+            // Each message's tag names are worked out once, not at every
+            // comparison.
+            let tags = self.shared.tags.borrow();
+            let mut keyed: Vec<(String, Rc<Message>)> =
+                matches.drain(..).map(|m| (tag_sort_key(&m, &tags), m)).collect();
+            keyed.sort_by(|(ka, a), (kb, b)| flip(text_key_cmp(ka, kb).then(b.timestamp.cmp(&a.timestamp))));
+            matches = keyed.into_iter().map(|(_, m)| m).collect();
+        } else {
+            matches.sort_by(|a, b| flip(message_cmp(a, b, sort)));
+        }
         self.total_matches = matches.len();
         if preview {
             matches.truncate(PREVIEW_ROWS);
@@ -3862,6 +4623,17 @@ impl MessageList {
                 groups.insert(key, vec![m]);
             }
         }
+        // Correspondents sort by the whole conversation's writers, as the
+        // column names them, which no single message knows (#443). The
+        // conversations are in date order beneath, newest first, from the
+        // sort above.
+        if sort == SortOrder::Correspondents {
+            let people: std::collections::HashMap<&(u32, String), String> =
+                order.iter().map(|k| (k, self.people_of(k, &groups[k]).to_lowercase())).collect();
+            let mut sorted = order.clone();
+            sorted.sort_by(|a, b| flip(text_key_cmp(&people[a], &people[b])));
+            order = sorted;
+        }
 
         // A reply that is sliding open, or shut, keeps doing so.
         let appearing: std::collections::HashSet<(u32, u32, u32)> = (0..self.shared.model.len())
@@ -3869,6 +4641,13 @@ impl MessageList {
             .filter(|r| r.meta.appear)
             .map(|r| r.slot())
             .collect();
+
+        // Under which date heading each conversation goes (#435): by the
+        // message that put it where it is in the sort, the newest for
+        // Newest First and the oldest for Oldest First, so a heading's rows
+        // always run together.
+        let by_date = self.group_by_date && matches!(sort, SortOrder::DateNewest | SortOrder::DateOldest);
+        let day_starts = by_date.then(|| crate::datefmt::day_starts(crate::datefmt::now()));
 
         // Flatten back into display order, recording per-row thread metadata.
         let mut shown: Vec<Rc<Message>> = Vec::new();
@@ -3881,6 +4660,7 @@ impl MessageList {
         let mut any_expanded = false;
         for key in &order {
             let mut msgs = groups.remove(key).unwrap();
+            let section = day_starts.as_ref().map_or(DaySection::None, |d| DaySection::of(msgs[0].timestamp, d));
             // A conversation reads like a transcript: the message that started it
             // is the row on screen, and its replies descend beneath it to the
             // newest. Where the *thread* sits among the other rows is still the
@@ -3904,7 +4684,7 @@ impl MessageList {
             let mut it = members.into_iter();
             let head = it.next().unwrap();
             shown.push(head.clone());
-            rows.push(Rc::new(RowData { msg: head, meta }));
+            rows.push(Rc::new(RowData { msg: head, meta, section }));
             if expanded {
                 any_expanded = true;
                 let closing = self.collapsing_threads.contains_key(key);
@@ -3922,6 +4702,7 @@ impl MessageList {
                             appear: appearing.contains(&slot),
                             ..Default::default()
                         },
+                        section,
                     }));
                 }
             }
@@ -3980,6 +4761,15 @@ impl MessageList {
         if !self.shared.model.replace(rows, stale) && stale {
             self.shared.refresh_all();
         }
+        // The headings come and go with the rows already in their sections,
+        // so the view never asks for a section of rows built without them.
+        if by_date != self.day_headings {
+            self.day_headings = by_date;
+            let factory = by_date.then(|| crate::ui::message_row::header_factory(&self.shared));
+            self.list_view.set_header_factory(factory.as_ref());
+        } else if by_date {
+            self.shared.refresh_headers();
+        }
         self.select_current();
 
         // Expanded conversations indent their member cards; give the pane the
@@ -4030,6 +4820,20 @@ impl MessageList {
             }
         });
         list.add_controller(key);
+        // Watched in the capture phase and never claimed, so the row still
+        // gets the click.
+        let click = gtk::GestureClick::new();
+        click.set_button(0);
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let s = input.clone();
+        click.connect_pressed(move |gesture, _, _, _| {
+            let extend = gesture.current_button() != gtk::gdk::BUTTON_PRIMARY
+                || gesture.current_event_state().intersects(
+                    gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK,
+                );
+            let _ = s.send(MessageListInput::PointerPressed { extend });
+        });
+        list.add_controller(click);
     }
 
     /// Ask for a rebuild at the end of the current main-loop pass, folding
@@ -4187,8 +4991,70 @@ impl MessageList {
     fn focus_row(&self, idx: usize) {
         if idx < self.shown.len() {
             self.list_view.scroll_to(idx as u32, gtk::ListScrollFlags::FOCUS, None);
+            self.reveal_first_heading(idx);
             self.list_view.grab_focus();
         }
+    }
+
+    /// A `scroll_to` the first row lines it up with the top, leaving the
+    /// date heading over it out of sight (#435): the list goes back to its
+    /// very top once laid out.
+    fn reveal_first_heading(&self, idx: usize) {
+        if let (0, true, Some(s)) = (idx, self.day_headings, &self.scroller) {
+            hold_top(&s.vadjustment(), &self.shared);
+        }
+    }
+
+    /// End Gmail's checking (#392): the row now selected, if it is one, opens.
+    fn stop_checking(&mut self, sender: &ComponentSender<Self>) {
+        if std::mem::take(&mut self.checking) {
+            let _ = sender.output(MessageListOutput::Checked(None));
+            // Told even when GTK's selection stays as it was: a lone checked
+            // row is selected already, and opening it changes nothing there.
+            sender.input(MessageListInput::SelectionChanged);
+        }
+    }
+
+    /// The row `delta` conversations away from `from`, clamped to the list:
+    /// the replies of a conversation opened out in the list are stepped
+    /// over, as Gmail's j and k move between conversations (#392). From no
+    /// row, the first step lands on the top or the bottom one.
+    fn conversation_step(&self, from: Option<usize>, delta: i32) -> usize {
+        let last = self.shown.len().saturating_sub(1);
+        let is_child = |p: usize| self.shared.model.row(p).is_some_and(|r| r.meta.is_child);
+        let Some(mut pos) = from.filter(|&p| p <= last) else {
+            let mut p = if delta > 0 { 0 } else { last };
+            while p > 0 && is_child(p) {
+                p -= 1;
+            }
+            return p;
+        };
+        for _ in 0..delta.unsigned_abs() {
+            let mut p = pos;
+            loop {
+                if delta > 0 {
+                    if p == last {
+                        break;
+                    }
+                    p += 1;
+                } else {
+                    if p == 0 {
+                        break;
+                    }
+                    p -= 1;
+                }
+                if !is_child(p) {
+                    break;
+                }
+            }
+            if is_child(p) {
+                // Only replies past here: stay on the conversation already
+                // reached.
+                break;
+            }
+            pos = p;
+        }
+        pos
     }
 
     /// Where deletion advances to, once the row at `idx` is gone: the row now
@@ -4241,7 +5107,7 @@ impl MessageList {
         let mut css = String::new();
         for (id, color) in colors {
             css.push_str(&format!(
-                ".vireo-acct-ring-{0} {{ border-radius: 9999px; outline: 2px solid {1}; outline-offset: 1px; }}\n",
+                ".hylki-acct-ring-{0} {{ border-radius: 9999px; outline: 2px solid {1}; outline-offset: 1px; }}\n",
                 id, color
             ));
         }
@@ -4252,11 +5118,12 @@ impl MessageList {
 #[cfg(test)]
 mod tests {
     use super::{
-        column_sort, compute_thread_keys, correspondents, heads_its_row, message_cmp, SortOrder, latest_elsewhere, nested_members, reader_conversation,
-        row_for_reader_key, thread_slot, unasked_threads,
+        column_sort, compute_thread_keys, correspondents, text_key_cmp, heads_its_row, message_cmp, SortOrder, latest_elsewhere, nested_members, reader_conversation,
+        row_for_reader_key, thread_slot, unasked_threads, QuickFilter, QuickFilterContext, QuickFilters,
     };
-    use crate::ui::message_row::{row_edits, swap_wanted, swipe_progress_px, RowEdit, SWIPE_ARM, SWIPE_MAX};
+    use crate::ui::message_row::{row_edits, swap_wanted, swipe_progress_px, DaySection, RowData, RowEdit, SWIPE_ARM, SWIPE_MAX};
     use crate::models::Message;
+    use std::rc::Rc;
 
     /// Apply `row_edits` to `old` the way the model applies them, then add
     /// the rest of `new`, and return the result alongside the number of rows
@@ -4430,20 +5297,21 @@ mod tests {
     fn headings_sort_by_their_columns() {
         use crate::config::ListColumn;
         for c in ListColumn::ALL {
-            if let Some(order) = column_sort(c, false) {
-                assert_eq!(SortOrder::from_key(order.key()), order);
-            }
+            let order = column_sort(c, false);
+            assert_eq!(SortOrder::from_key(order.key()), order);
         }
-        assert_eq!(column_sort(ListColumn::Sender, true), Some(SortOrder::Recipients));
-        assert_eq!(column_sort(ListColumn::Tags, false), None);
+        assert_eq!(column_sort(ListColumn::Sender, true), SortOrder::Recipients);
+        assert_eq!(column_sort(ListColumn::Tags, false), SortOrder::Tags);
+        assert_eq!(text_key_cmp("", "a"), std::cmp::Ordering::Greater);
+        assert_eq!(text_key_cmp("ann", "bob"), std::cmp::Ordering::Less);
         let due = |id, due| Message { due, ..msg(id, "", "") };
         let mut list = vec![due(1, 0), due(2, 300), due(3, 100)];
         list.sort_by(|a, b| message_cmp(a, b, SortOrder::Due));
         assert_eq!(list.iter().map(|m| m.id).collect::<Vec<_>>(), vec![3, 2, 1]);
     }
 
-    /// #334: who wrote, oldest first and each once; who it went to when
-    /// nobody else has written.
+    /// #334: who wrote, each once; who it went to when nobody else has
+    /// written. #443: the newest writer first.
     #[test]
     fn correspondents_name_each_writer_once() {
         let from = |id, name: &str, addr: &str, ts| Message {
@@ -4454,7 +5322,8 @@ mod tests {
             ..msg(id, "", "")
         };
         let (a, b, a2) = (from(1, "Ann", "a@example.com", 10), from(2, "", "b@example.com", 20), from(3, "Ann", "A@example.com", 30));
-        assert_eq!(correspondents(&[&a2, &b, &a]), "Ann, b@example.com");
+        assert_eq!(correspondents(&[&a, &b, &a2]), "Ann, b@example.com");
+        assert_eq!(correspondents(&[&a, &b]), "b@example.com, Ann");
         assert_eq!(correspondents(&[&a]), "Ann");
         assert_eq!(correspondents(&[]), "");
     }
@@ -4755,5 +5624,86 @@ mod tests {
         assert_eq!(row((1, 9)), Some(1));
         // And one from neither is no row at all.
         assert_eq!(row((1, 42)), None);
+    }
+
+    /// #435: each day falls under its heading, the boundaries at midnight,
+    /// and mail dated ahead of the clock under Today.
+    #[test]
+    fn mail_falls_under_its_days_heading() {
+        let day = 86_400;
+        let today = 100 * day;
+        let starts = [today, today - day, today - 6 * day, today - 13 * day];
+        let of = |ts| DaySection::of(ts, &starts);
+        assert_eq!(of(today + 5 * day), DaySection::Today);
+        assert_eq!(of(today), DaySection::Today);
+        assert_eq!(of(today - 1), DaySection::Yesterday);
+        assert_eq!(of(today - day), DaySection::Yesterday);
+        assert_eq!(of(today - day - 1), DaySection::LastWeek);
+        assert_eq!(of(today - 6 * day), DaySection::LastWeek);
+        assert_eq!(of(today - 6 * day - 1), DaySection::LastFortnight);
+        assert_eq!(of(today - 13 * day), DaySection::LastFortnight);
+        assert_eq!(of(today - 13 * day - 1), DaySection::Older);
+        assert_eq!(of(0), DaySection::Older);
+    }
+
+    /// The local midnights run back a day, a week and a fortnight, and the
+    /// first is the start of the day `now` is in.
+    #[test]
+    fn the_days_start_at_local_midnight() {
+        let now = crate::datefmt::now();
+        let [today, yesterday, week, fortnight] = crate::datefmt::day_starts(now);
+        assert!(today <= now && now - today < 25 * 3600);
+        assert_eq!(crate::datefmt::day_key(today), crate::datefmt::day_key(now));
+        assert_ne!(crate::datefmt::day_key(today - 1), crate::datefmt::day_key(today));
+        for (later, earlier, days) in [(today, yesterday, 1), (today, week, 6), (today, fortnight, 13)] {
+            let gap = later - earlier;
+            assert!((gap - days * 86_400).abs() <= 3600, "{days} days back is {gap}s");
+        }
+    }
+
+    /// A section is a run of rows under one heading, so the view's question
+    /// about any row is a search among a handful of starts.
+    #[test]
+    fn sections_are_the_runs_of_one_heading() {
+        use crate::ui::message_row::section_starts;
+        let row = |id: u32, section| Rc::new(RowData { msg: Rc::new(msg(id, "", "")), meta: Default::default(), section });
+        assert_eq!(section_starts(&[]), vec![0]);
+        let plain: Vec<_> = (0..5).map(|i| row(i, DaySection::None)).collect();
+        assert_eq!(section_starts(&plain), vec![0]);
+        let days = [
+            DaySection::Today,
+            DaySection::Today,
+            DaySection::Yesterday,
+            DaySection::Older,
+            DaySection::Older,
+            DaySection::Older,
+        ];
+        let rows: Vec<_> = days.iter().enumerate().map(|(i, s)| row(i as u32, *s)).collect();
+        assert_eq!(section_starts(&rows), vec![0, 2, 3]);
+    }
+
+    /// #441: the quick filters narrow together, and "Addressed to Me" reads
+    /// both To and Cc in either address form.
+    #[test]
+    fn quick_filters_narrow_together() {
+        let ctx = |filters: QuickFilters| QuickFilterContext {
+            filters,
+            own: ["me@example.com".to_string()].into_iter().collect(),
+            contacts: Some(std::sync::Arc::new(["x@example.com".to_string()].into_iter().collect())),
+            tags: Vec::new(),
+            today: 900,
+        };
+        let mut m = msg(1, "a", "");
+        m.cc = "\"Doe, Jo\" <jo@example.com>, Me <ME@example.com>".into();
+        let all = QuickFilters::default();
+        assert!(ctx(all).passes(&m));
+        assert!(ctx(all.with(QuickFilter::ToMe, true)).passes(&m));
+        assert!(ctx(all.with(QuickFilter::Contacts, true).with(QuickFilter::Today, true)).passes(&m));
+        assert!(!ctx(all.with(QuickFilter::ToMe, true).with(QuickFilter::Unread, true)).passes(&m));
+        m.unread = true;
+        assert!(ctx(all.with(QuickFilter::ToMe, true).with(QuickFilter::Unread, true)).passes(&m));
+        assert!(!ctx(all.with(QuickFilter::Unread, true).with(QuickFilter::Unread, false).with(QuickFilter::Attachment, true)).passes(&m));
+        m.timestamp = 800;
+        assert!(!ctx(all.with(QuickFilter::Today, true)).passes(&m));
     }
 }

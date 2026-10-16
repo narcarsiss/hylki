@@ -225,8 +225,16 @@ lists at most 5,000 messages per account. They are kept in
 On a Gmail account, the labels Gmail has on a message show as pills beside
 its tags, in the message list and the reader. Gmail's own labels, such as
 Inbox, Important and Starred, are left out, as is the label of the folder
-being read. A label with the same name or keyword as a tag shows as that
-tag. Labels are read with each sync of a folder's newest mail; mail synced
+being read. Each label has a color of its own, picked from its name; a tag
+named like the label sets the color instead. A label with the same name or keyword as a tag is that tag: it
+shows as the tag, the tag's view in the sidebar lists the message, and
+smart folders and the tag menus count it.
+
+Tagging a message on a Gmail account puts a label named like the tag on it,
+so Gmail's own apps show the tag too, and keeps the IMAP keyword other mail
+programs read; taking the tag off removes both. A label Hylki has just made
+appears as a folder after the next folder check, as every Gmail label does.
+Labels are read with each sync of a folder's newest mail; mail synced
 before Hylki read labels gets them once, in the background.
 
 ### Hiding folders
@@ -521,6 +529,15 @@ name, surname or address starts with them, and the answers join the
 suggestions from GNOME Contacts and your mail. Nothing is copied from the
 directory to your machine.
 
+The search in Contacts asks the directories the same way. The people they
+hold are listed after your contacts, under **In Directories**, with the
+directory's name beside each address. Selecting one shows the entry: an
+address starts a message, and **Add to Contacts** copies the person into the
+default address book. Each directory is also in the address book list above
+the contacts, by name after the address books: picking it shows only the
+people the search finds there. A directory switched on in Evolution is searched
+without restarting Hylki.
+
 A directory is an address book in Evolution Data Server, the service GNOME
 Contacts and Evolution keep theirs in. Hylki adds no LDAP client of its own,
 so a directory set up in Evolution is listed here as well, and one added
@@ -540,11 +557,20 @@ here shows in Evolution. Removing one removes it for both.
   `cn=jane,ou=people,dc=example,dc=com`, and its password. Leave both empty
   for a directory that can be searched anonymously. The password is kept in
   the keyring and handed to Evolution Data Server when the directory asks
-  for it.
+  for it. A directory set up in Evolution with its password remembered needs
+  none in Hylki: Evolution Data Server signs in with the one Evolution
+  stored.
 
 Saving checks the connection and says whether the directory answered, or
 why not (a password it refused, a server it could not reach or find, TLS
-that could not start). The check gives up after 30 seconds. The Flatpak
+that could not start). The check gives up after 30 seconds. A directory
+that fails during a search, such as one that needs a password neither
+Hylki nor Evolution has, says why under **In Directories** in Contacts, once
+in the status bar of each composer, and in its row in Settings → LDAP
+Directories. It is left alone for 30 seconds before it is asked again. The
+console ([the status bar](#the-status-bar) with **Settings → System → Console
+mode** on) records each directory's answer to a search: how many entries it
+found and how many of them have an address, and **Export log** saves it. The Flatpak
 reaches the desktop's Evolution Data Server, which has to be installed on
 the system, as it is with GNOME.
 
@@ -552,13 +578,20 @@ the system, as it is with GNOME.
 
 A Microsoft 365 account signed in within Hylki can suggest people from the
 organization's directory as a recipient is typed, alongside LDAP
-directories. Turn on **Search the organization directory** in the account's
-settings. Microsoft then asks to approve access to the directory (the
+directories. Turn on **Search the organization directory** under Microsoft
+365 in the account's settings, where the account's other Microsoft Graph
+switches are too. Microsoft then asks to approve access to the directory (the
 People.Read and User.ReadBasic.All permissions). Where an organization lets
 only administrators approve apps, an administrator approves Hylki once, at
 the link shown. Accounts added through GNOME Online Accounts cannot use it,
 since GNOME holds their sign-in; add the account in Hylki with the Microsoft
 365 / Outlook provider instead.
+
+With **Suggest only from this account** on as well, a message written from
+that account is offered only the organization's directory and the people in
+the account's own mail. The directory's list includes the account's Outlook
+contacts. GNOME Contacts, LDAP directories and the other accounts' mail are
+left out, so a work account does not offer personal addresses.
 
 ### Translating messages
 
@@ -610,6 +643,29 @@ sent for translation.
 
 The settings are in `translation.toml`; the key is in the keyring.
 
+### Signatures
+
+An account's signature is written in the **Signatures** group of its
+settings, in the same editor as a message; **Import File…** loads one from
+an HTML or text file. **Edit HTML**, at the end of the editor's toolbar,
+shows the signature as its HTML source to edit in place, and **Preview**
+turns it back into the formatted signature. Scripts and style sheets are
+removed from the source; inline styles, tables and pictures are kept.
+
+**Add Signature** starts another, for writing in another language or a
+shorter one for quick replies. Once there are two, a **Signature** chooser
+picks the one being edited and a **Name** field names it. **Start messages
+with this signature** marks the one new messages, replies and forwards open
+with; with it off for all of them, a message opens without one. A signature
+left empty is not saved.
+
+With more than one, the composer's **Insert Signature** button lists them
+by name, with **No Signature** at the end. The one picked replaces the
+signature in the message, in the same place; with none in the message, it
+goes where a signature goes. Changing **From** to another account puts in
+that account's own signature; an alias of the same account keeps the one
+picked.
+
 ### Where the signature goes
 
 In a reply or forward the account's signature is placed above the quoted
@@ -627,11 +683,12 @@ out when they quote your message; Gmail, Apple Mail and Outlook ignore it.
 **Edit as New** leaves the signature out, since the copied message already
 has one. **Insert Signature**, the button beside Translate at the end of the
 formatting row, puts the From account's signature where the cursor is, on a
-line of its own. Right-click the button for **Insert Before the Text** or
-**Insert After the Text**, the top or the end of the message. A signature
-already in the message moves rather than doubling; one inside a quoted
-message is left alone. The button is there only for an account that has a
-signature.
+line of its own; with several it lists them, as above. Right-click the
+button for **Insert Before the Text** or **Insert After the Text**, the top
+or the end of the message, with the signature last picked or else the
+default. A signature already in the message moves rather than doubling; one
+inside a quoted message is left alone. The button is there only for an
+account that has a signature.
 
 ### Replies and forwards
 
@@ -689,6 +746,20 @@ or directly under the Inbox. Nothing on a server marks one otherwise, so a
 folder by another name, "Vorlagen" say, is chosen in the account's
 **Special Folders**, under **Templates**.
 
+### Addresses as pills
+
+Each address in To, Cc and Bcc is a pill, with its name when it has one and
+the address under the pointer. A space after a whole address, <kbd>Return</kbd>
+or a comma makes the pill, and the comma is not kept. A space after a name
+does not, so a name can still be typed to find someone in the suggestions.
+Addresses pasted as a list, separated by commas, semicolons or line breaks,
+become a pill each.
+
+<kbd>Backspace</kbd> on an empty field turns the last pill back into text to
+edit, until the next space, <kbd>Return</kbd> or comma. A double click does the
+same for any pill, and its × removes it. A pill that is not an email address
+is red.
+
 ### The From address
 
 The From row lists each account's address and the aliases set up for it.
@@ -731,7 +802,10 @@ rest of what a mail can carry:
   client to pick its own font of each kind; the fonts most mail programs
   offer, such as Arial, Georgia, Verdana and Courier New, each with a
   fallback; or **Other Font…** for any font installed here, followed by its
-  generic kind in case the recipient lacks it.
+  generic kind in case the recipient lacks it. Each font in the menu is shown
+  in its own face. The last five fonts picked
+  with **Other Font…** are listed at the foot of the menu. With nothing
+  selected, the font applies to what is typed next.
 - **Font size:** points from 8 to 36, or Default. With nothing selected, the
   size applies to what is typed next.
 - **Text color and Highlight:** the GNOME palette and **Custom…** for any
@@ -747,8 +821,15 @@ Markdown has no words for them, so switching such a message to Markdown or
 plain text leaves them out. **Settings → Composing → Formatting toolbar**
 says whether a new message starts with these tools shown (Always expanded)
 or hidden behind the chevron (Always collapsed, the default); the chevron
-changes it for the message at hand. When the composer is narrow, the
-toolbar wraps onto a second row.
+changes it for the message at hand. **Settings → Composing → Font** and
+**Font size** set the font and size a rich-text message starts in, and they
+are sent with it, so the recipient sees them too. They cover what you
+write: the signature and the message quoted in a reply or forward keep their
+own look, and text given its own font or size in the message keeps it. **Other Font…** in the Font list picks any
+installed font. Default, for both, leaves the recipient's own font and size
+in charge. When the composer is narrow, the
+toolbar wraps onto a second row, the chevron staying beside the tools it
+shows wherever the row has room for it.
 
 ### Spell checking
 
@@ -780,11 +861,12 @@ formatting row, which wears the icon of the format it is set to and lists
 the others, the current one in your accent colour:
 
 - **Rich text:** the WYSIWYG editor with its formatting toolbar. The default.
+  It is sent as HTML with a plain-text alternative, not as RTF.
 - **Markdown:** you write Markdown, the recipient gets formatted mail.
-- **HTML:** you write the message's HTML by hand.
+- **HTML source:** you write the message's HTML by hand.
 - **Plain text:** no formatting at all, sent as `text/plain` only.
 
-Markdown and HTML are written as *source*: a monospace field, the formatting
+Markdown and HTML source are written as *source*: a monospace field, the formatting
 buttons gone from the row above it (they would go nowhere), and a **Preview**
 toggle beside the format chooser that swaps the source for the message as it
 will be sent. Nothing
@@ -797,6 +879,14 @@ the same way.
 Switching format converts what is already in the message, so you can start a
 reply in rich text and finish it in Markdown; the quoted original comes
 across as `>` lines.
+
+**Settings → Composing → Reply in the original's format**, off by default,
+answers plain text in kind. A reply, a reply to all or a forward of a message
+that came as plain text only, the way mailing lists and many of the people on
+them send it, opens in plain text, the original quoted as `>` lines that keep
+its indents. A message with an HTML part is answered in the format chosen in
+**Write messages in**. Drafts, templates and **Edit as New** open as they
+always have, and the format button still switches any one message.
 
 **The Markdown Hylki understands** is the dialect documented at
 [markdownguide.org](https://www.markdownguide.org/): all of the basic
@@ -1040,7 +1130,8 @@ folds what you have read, and **All but the newest** folds every message
 except the newest, read or not. The newest always opens, and so does a
 message you move to with `w` or `b`. Right-clicking anywhere in a
 conversation offers **Expand All Messages** and **Collapse All Messages**.
-What you fold or open stays that way while the conversation is on screen.
+What you fold or open stays that way while the conversation is on screen,
+and so does a message read while it is open.
 Printing shows every message in full.
 
 ### A message in its own window
@@ -1118,20 +1209,21 @@ their own. **Single line** puts them on one line in columns: the sender's
 circle and name, the subject with the text dimmed after it, then tags, a
 paperclip, the conversation's size and a short date. **Automatic** uses one
 line while the list pane is dragged wider than about 600 pixels and cards
-when it is narrower. On one line the actions palette is not shown; the
-right-click menu, swipes and keyboard shortcuts do the same things.
+when it is narrower. On one line the actions palette is not shown and a
+row does not swipe, as sideways is how the list scrolls to its columns;
+the right-click menu and keyboard shortcuts do the same things.
 
 **Settings → Message List → Columns** chooses what a single line shows and
 in what order: drag a column between **Shown** and **Not shown**, or along
-the row. The subject always stays, and the conversation's size rides at its
-end. The columns are:
+the row. Any number of columns can be shown. The subject always stays, and
+the conversation's size rides at its end. The columns are:
 
 | Column | What it shows |
 | --- | --- |
 | Star | The star, lit when the message is starred |
 | Sender | Who it is from; in Sent, who it went to |
 | Recipients | Who it went to |
-| Correspondents | Everyone who wrote in the conversation, you as "me" |
+| Correspondents | Everyone who wrote in the conversation, newest first, you as "me" |
 | Subject | The subject, with the start of the text dimmed after it |
 | Tags | The message's tags |
 | Attachment | A paperclip when there are files attached |
@@ -1149,20 +1241,78 @@ Defaults** goes back to star, sender, subject, tags, attachment and date.
 **Column headings**, in the same group, names the columns above the list.
 Clicking a heading sorts the list by that column, and clicking it again
 reverses the order; the sorted heading is in the accent color, with an
-arrow. Tags and Correspondents do not sort. The sort menu follows the
-headings.
+arrow. Correspondents sorts by the names the column shows, and Tags by tag
+name with untagged mail last. The sort menu follows the headings.
 
-The name and date columns are resized by dragging the faint line at a
-heading's edge: the right edge of a column left of the subject, the left
-edge of one right of it. A double click on that line puts the column back
-to its usual width, and **Restore Defaults** puts every column back. When
-the list is too narrow for the widths set, the name columns give way in
-proportion and the dates keep theirs.
+The name, tags and date columns are resized by dragging a heading's edge,
+where a line shows under the pointer: the right edge of a column left of
+the subject, the left edge of one right of it. A double click there puts
+the column back to its usual width, and **Restore Defaults** puts every
+column back.
+
+**Fit columns to the list**, in the same group and on until it is switched
+off, narrows the name and tag columns in proportion when the list is too
+narrow for the widths set; the dates keep theirs. Switched off, every
+column keeps its width, the subject takes the room they leave, and a list
+too narrow for them all scrolls sideways to the columns past its edge, the
+headings with it.
+
+A right-click on the headings offers **Customize Columns…**, which opens
+Settings at **Message List → Columns**.
+
+**Settings → Message List → Group by date**, on by default, divides the
+list under headings: **Today**, **Yesterday**, **Last 7 days**, **Last 14
+days** and **Older**, counted in calendar days on this computer's clock. The headings
+show only while the list is sorted by date, newest or oldest first, and move
+on at midnight. A conversation goes under the heading of the message that
+places it in the sort, the newest for newest first and the oldest for oldest
+first, and its replies stay with it when it is opened out. The headings work
+in both layouts and in search results, and are not rows: the keyboard,
+selection and swipes pass them by. It is off unless switched on.
 
 **Settings → Message List → Tint tagged messages** washes the row of a
 tagged message with its tag's color, in both layouts. A message with more
 than one tag takes the color of the one listed first in **Settings → Tags**.
 A selected row keeps the selection color. It is on unless switched off.
+
+**Settings → Message List → Tags and labels under the text** puts a card's
+tags, Gmail labels and folder pill on a line of their own under the
+message's text, so the subject keeps the row's full width. It is off unless
+switched on; a single-line list keeps them in its Tags column.
+
+**Settings → Message List → Keep the search field open** shows the search
+field above the list all the time, instead of only after the search button,
+<kbd>Ctrl+F</kbd> or <kbd>/</kbd>. One click in it starts a search.
+<kbd>Esc</kbd> clears it and returns to the list, and it stays where it is.
+It is off unless switched on.
+
+The button beside the search field sets where a search looks, and the info
+button beside each choice in its popover says what that choice searches.
+**All folders (except trash & junk)**, the default, searches every folder of
+every account except Trash and Junk, unless the list is showing one of them. **Everywhere** takes in Trash and
+Junk too, and **This folder** only the folder on screen. In the first two,
+each result wears a pill with the name of the folder it is in.
+
+The sort and filter button in the list's header opens a popover of two
+columns. **Sort by** orders the list by date, newest or oldest first, by
+sender or subject, or puts unread or starred mail first. **Show only** holds
+the quick filters:
+
+- **Unread** and **Starred**
+- **Has Attachments**
+- **Addressed to Me**: one of your addresses or aliases is in To or Cc
+- **From Contacts**: the sender is in your Contacts, as for filter rules
+- **High Importance**
+- **Tagged**: the message has a tag or a Gmail label
+- **Today**: it arrived since midnight on this computer's clock
+
+A click turns a filter on or off and leaves the popover open, so an order
+and several filters can be set at once; together the filters show only the
+mail that matches all of them. While any is
+on the button is in the accent color and its tooltip names them. **Clear
+Filters** turns them all off. They apply to whichever folder or search is
+shown, and last until Hylki is closed. In Focus Mode they are under
+**Filter** and **Sort** in the list's ⋯ menu.
 
 Clicking the unread dot on a row marks that message read without selecting
 or opening it. A conversation's dot that is lit only for an unread reply
@@ -1205,11 +1355,26 @@ unread when the setting was turned on counts as seen. The marks are kept in
 
 ### Unread count on the app icon
 
-Hylki puts the number of unread inbox messages on its icon in the dock or
-task manager, the same count as the tray icon's dot. KDE Plasma's task
-manager shows it, and so do the Dash to Dock and Dash to Panel extensions
-for GNOME; GNOME's own dash has no badges. **Settings → System → Unread count
-on the app icon** turns it off. Stored as `launcher_count` in `privacy.toml`.
+Hylki puts a number on its icon in the dock or task manager. KDE Plasma's
+task manager shows it, and so do the Dash to Dock and Dash to Panel
+extensions for GNOME; GNOME's own dash has no badges. **Settings → System →
+Unread count on the app icon** chooses what it counts:
+
+- **All unread inbox mail**, the default: every unread message in every
+  account's inbox, the same count as the tray icon's dot.
+- **New since last in front**: only the inbox mail that arrived while the
+  main window was not the active window, and is still unread. It is the mail
+  a new-mail notification is raised for, less what a filter filed out of the
+  inbox, whether or not notifications are on. Reading or deleting one of those messages, from a
+  notification's buttons or on another device, takes it off the count, and
+  the count goes back to none as soon as the main window is in front. It
+  starts from none each time Hylki starts. The tray icon's dot still counts
+  every unread inbox message.
+- **Off**: no number.
+
+Stored as `launcher_badge` (`off`, `all_unread` or `new_since_front`) in
+`privacy.toml`; `launcher_count`, the on/off switch it replaced, is still
+written for older versions and read when `launcher_badge` is absent.
 
 ### Renderer
 
@@ -1234,6 +1399,16 @@ header, so it shows on any account, not only Microsoft 365. A tenant that
 leaves the label's name out of the message shows the pill as **Labeled**.
 Outlook's older Sensitivity setting (Personal, Private, Confidential) shows
 the same way.
+
+For a Microsoft 365 account signed in within Hylki, **Show sensitivity label
+names**, under Microsoft 365 in the account's settings, names those labels from the
+organization's own list, with the label's color on the tag icon and the
+organization's description of the label in the pill's tooltip. Turning it
+on asks Microsoft to approve reading the labels (the
+InformationProtectionPolicy.Read permission). The list is read once a
+session and again after an hour. It holds the labels published to you, so a
+label from another organization stays **Labeled**. As with the directory,
+an account added through GNOME Online Accounts cannot use it.
 
 Hylki only shows the label: it does not apply the rules the organization
 attached to it, and it cannot set a label on a message you write. A message
@@ -1294,6 +1469,15 @@ played while Do Not Disturb is on; the Flatpak cannot see Do Not Disturb, which 
 desktop does not share with sandboxed apps. The desktop may play a sound of
 its own for the notification as well; GNOME Settings → Notifications → Hylki →
 Sound Alerts turns that one off.
+
+### The status bar
+
+Errors, and the console when **Settings → System → Console mode** is on, open
+in a bar at the bottom of the window. **Settings → System → Status bar** puts
+it at the top instead. <kbd>Ctrl+Shift+S</kbd>, or a long press on Refresh,
+shows or hides it. Its buttons are, from the left, **Export log** (while the
+console is open), the console, and the bar's own toggle. Stored as
+`status_bar_top` in `privacy.toml`.
 
 ## Privacy
 

@@ -31,7 +31,18 @@ pub fn init() {
     apply_language(&chosen);
     // SAFETY: called once at the very start of main, before any other
     // thread exists (setlocale is not thread-safe).
-    unsafe { gettextrs::setlocale(LocaleCategory::LcAll, "") };
+    if unsafe { gettextrs::setlocale(LocaleCategory::LcAll, "") }.is_none() {
+        // The session's locale is one the C library here lacks (a Flatpak
+        // runtime without that language's locale extension), which leaves
+        // the process in the ASCII "C" locale, and every child inherits the
+        // environment that put it there. WebKit starts its web process
+        // through flatpak-spawn and hands it the whole environment as
+        // arguments; under "C" flatpak-spawn refuses any value that is not
+        // ASCII, the web process never connects, and GLib aborted the app
+        // at launch (#437). C.UTF-8 is built into glibc and takes any UTF-8.
+        std::env::set_var("LC_ALL", "C.UTF-8");
+        unsafe { gettextrs::setlocale(LocaleCategory::LcAll, "C.UTF-8") };
+    }
     if !chosen.is_empty() {
         let bare = ["LC_ALL", "LC_MESSAGES", "LANG"]
             .iter()

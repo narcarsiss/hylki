@@ -98,6 +98,7 @@ fn suggestion(name: &str, address: &str) -> Option<Suggestion> {
         name: if name.is_empty() { address.to_string() } else { name.to_string() },
         email: address.to_string(),
         from_contacts: true,
+        from_directory: true,
         score: 0,
         own: false,
     })
@@ -221,21 +222,23 @@ fn failure(e: ureq::Error) -> Failure {
         ureq::Error::Status(429, resp) => Failure::Throttled(
             resp.header("Retry-After").and_then(|v| v.trim().parse().ok()).unwrap_or(DEFAULT_RETRY_AFTER),
         ),
-        ureq::Error::Status(code, resp) => {
-            let body = resp.into_string().unwrap_or_default();
-            let v = serde_json::from_str::<serde_json::Value>(&body).unwrap_or_default();
-            let what = v["error"]["code"].as_str().or(v["error"]["message"].as_str()).unwrap_or_default();
-            let why = format!("HTTP {code} {what}");
-            // Authorization_RequestDenied, ErrorAccessDenied: the tenant's
-            // answer, which the next query will get as well. A 400 may be
-            // this query's alone.
-            if matches!(code, 403 | 404) {
-                Failure::Refused(why)
-            } else {
-                Failure::Failed(why)
-            }
-        }
+        ureq::Error::Status(code, resp) => status_failure(code, &resp.into_string().unwrap_or_default()),
         other => Failure::Failed(other.to_string()),
+    }
+}
+
+fn status_failure(code: u16, body: &str) -> Failure {
+    let v = serde_json::from_str::<serde_json::Value>(body).unwrap_or_default();
+    let what = v["error"]["code"].as_str().or(v["error"]["message"].as_str()).unwrap_or_default();
+    let why = format!("HTTP {code} {what}").trim_end().to_string();
+    // Authorization_RequestDenied, ErrorAccessDenied: the tenant's answer,
+    // which the next query will get as well. A 400 that names its error
+    // may be this query's alone; a bare one is what a personal Microsoft
+    // account, which has no organization, gets for every query.
+    if matches!(code, 403 | 404) || (code == 400 && what.is_empty()) {
+        Failure::Refused(why)
+    } else {
+        Failure::Failed(why)
     }
 }
 
@@ -370,7 +373,7 @@ mod tests {
     use super::*;
 
     fn s(name: &str, email: &str) -> Suggestion {
-        Suggestion { name: name.into(), email: email.into(), from_contacts: true, score: 0, own: false }
+        Suggestion { name: name.into(), email: email.into(), from_contacts: true, from_directory: true, score: 0, own: false }
     }
 
     #[test]
@@ -487,6 +490,14 @@ mod tests {
         // And nothing is kept past its time.
         assert!(st.recall("me@contoso.com", "ade", t0 + KEEP + Duration::from_secs(1)).is_none());
         assert!(st.answers.is_empty());
+    }
+
+    #[test]
+    fn a_list_the_account_cannot_have_is_not_asked_again() {
+        assert!(matches!(status_failure(400, ""), Failure::Refused(_)));
+        assert!(matches!(status_failure(403, r#"{"error":{"code":"Authorization_RequestDenied"}}"#), Failure::Refused(_)));
+        assert!(matches!(status_failure(400, r#"{"error":{"code":"Request_BadRequest"}}"#), Failure::Failed(_)));
+        assert!(matches!(status_failure(503, ""), Failure::Failed(_)));
     }
 
     #[test]

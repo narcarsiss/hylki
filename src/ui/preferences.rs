@@ -5,7 +5,9 @@
 use adw::prelude::*;
 use relm4::prelude::*;
 
-use crate::config::{AppTheme, ClockStyle, DateStyle, MessageTheme, ReaderToolbar, ToolbarItem, ToolbarSide, TrayIcon};
+use crate::config::{
+    AppTheme, ClockStyle, DateStyle, LauncherBadge, MessageTheme, ReaderToolbar, ToolbarItem, ToolbarSide, TrayIcon,
+};
 use crate::ui::chip_flow::ChipFlow;
 use std::rc::Rc;
 use crate::i18n::{i18n, i18n_f, i18n_noop};
@@ -100,6 +102,10 @@ pub struct PrefInit {
     pub paste_plain: bool,
     pub return_paragraph: bool,
     pub toolbar_expanded: bool,
+    /// The font rich-text messages are written in, as a CSS family list,
+    /// and its size in points; empty and 0 are the defaults.
+    pub compose_font: String,
+    pub compose_font_size: u32,
     /// Settings → Reading → Printing (#359).
     pub print_options: crate::config::PrintOptions,
     pub spellcheck: bool,
@@ -117,6 +123,8 @@ pub struct PrefInit {
     pub plain_font: String,
     /// New messages start as plain text (#180).
     pub compose_format: crate::config::ComposeFormat,
+    /// Replies and forwards to plain-text mail are written in plain text (#436).
+    pub follow_plain: bool,
     /// Where the split reply opens in the reading pane (#212).
     pub reply_position: crate::config::ReplyPosition,
     /// Where the signature sits in a reply or forward (#237).
@@ -143,6 +151,7 @@ pub struct PrefInit {
     pub start_view: crate::config::StartView,
     pub folder_sort: crate::config::FolderSort,
     pub console_mode: bool,
+    pub status_bar_top: bool,
     pub read_mark: crate::config::ReadMark,
     pub sidebar_hover_expand: bool,
     pub remember_sidebar: bool,
@@ -158,6 +167,10 @@ pub struct PrefInit {
     pub list_layout: crate::config::ListLayout,
     pub list_columns: Vec<crate::config::ListColumn>,
     pub list_headings: bool,
+    pub list_column_scroll: bool,
+    pub list_group_by_date: bool,
+    pub list_pills_below: bool,
+    pub list_search_open: bool,
     pub single_key_shortcuts: bool,
     pub gmail_keys: bool,
     pub keep_downloads_days: u32,
@@ -166,7 +179,7 @@ pub struct PrefInit {
     pub tray: bool,
     pub tray_icon: TrayIcon,
     pub tray_mail: bool,
-    pub launcher_count: bool,
+    pub launcher_badge: LauncherBadge,
     /// The chosen app icon (an `app_icon::catalog` id).
     pub app_icon: String,
     /// The accounts panel (built by the AccountsWindow component), shown
@@ -191,6 +204,13 @@ pub struct PrefInit {
 const TRAY_ICONS: &[(&str, TrayIcon)] = &[
     (i18n_noop("App icon"), TrayIcon::Hylki),
     (i18n_noop("Symbolic"), TrayIcon::Symbolic),
+];
+
+/// The launcher badge's choices (#431), in the order the row lists them.
+const LAUNCHER_BADGES: &[(&str, LauncherBadge)] = &[
+    (i18n_noop("Off"), LauncherBadge::Off),
+    (i18n_noop("All unread inbox mail"), LauncherBadge::AllUnread),
+    (i18n_noop("New since last in front"), LauncherBadge::NewSinceFront),
 ];
 
 const APP_THEMES: &[(&str, AppTheme)] = &[
@@ -364,6 +384,8 @@ pub struct Preferences {
     /// The single-line columns being edited (#334), and their editor.
     list_columns: Vec<crate::config::ListColumn>,
     column_editor: Option<ColumnEditor>,
+    /// Message List → Columns, which the list's headings open to (#443).
+    columns_group: Option<gtk::Widget>,
     /// Whether the list can be on one line at all, which the columns are
     /// for.
     list_single_possible: bool,
@@ -525,12 +547,10 @@ struct ChipZones {
 impl ChipZones {
     /// One zone per `(title, hint)`. `has_room` says whether a zone takes
     /// another chip; `on_drop` is handed the chip's key, the zone and the
-    /// slot, and says whether it took it. `scroll` keeps each zone's chips
-    /// on one row that scrolls sideways instead of wrapping.
+    /// slot, and says whether it took it.
     fn build(
         host: &gtk::Box,
         heads: &[(String, String)],
-        scroll: bool,
         has_room: impl Fn(usize, &ChipFlow) -> bool + Clone + 'static,
         on_drop: impl Fn(String, usize, usize) -> bool + Clone + 'static,
     ) -> Self {
@@ -567,16 +587,8 @@ impl ChipZones {
             let flow = ChipFlow::new(chip_size.clone(), drag_size.clone());
             flow.set_halign(gtk::Align::Fill);
             flow.set_valign(gtk::Align::Start);
-            // The dashed frame: the flow itself, or around the scroller,
-            // which must not scroll away with the chips.
-            let scroller = scroll.then(|| {
-                flow.set_single_row(true);
-                crate::ui::fade_scroll::FadeScroll::new(&flow)
-            });
-            let frame: gtk::Widget = match &scroller {
-                Some(s) => s.clone().upcast(),
-                None => flow.clone().upcast(),
-            };
+            // The dashed frame.
+            let frame: gtk::Widget = flow.clone().upcast();
             frame.add_css_class("toolbar-zone");
 
             let empty = gtk::Label::new(Some(&i18n("Empty")));
@@ -601,17 +613,10 @@ impl ChipZones {
             // that slot. The dragged chip is hidden in its own zone for
             // the duration, so the hole it left closes the same way.
             let drop = gtk::DropTarget::new(gtk::glib::Type::STRING, gtk::gdk::DragAction::MOVE);
-            // A chip held near a scrolling zone's edge scrolls it, so a slot
-            // past the frame can be reached.
-            let edge = scroller.as_ref().map(|s| EdgeScroll::new(s.hadjustment(), &flow));
             let fb = flow.clone();
             let room = has_room.clone();
             let take = on_drop.clone();
-            let es = edge.clone();
             drop.connect_drop(move |_, value, x, y| {
-                if let Some(es) = &es {
-                    es.stop();
-                }
                 let Ok(key) = value.get::<String>() else {
                     return false;
                 };
@@ -638,26 +643,18 @@ impl ChipZones {
             let fb = flow.clone();
             let el = empty.clone();
             let room = has_room.clone();
-            let es = edge.clone();
             drop.connect_motion(move |_, x, y| {
                 if !room(zone, &fb) {
                     return gtk::gdk::DragAction::empty();
                 }
                 el.set_visible(false);
                 fb.set_gap(Some(fb.insertion_index(x, y)));
-                if let Some(es) = &es {
-                    es.track(x, y);
-                }
                 gtk::gdk::DragAction::MOVE
             });
             let fb = flow.clone();
             let fr = frame.clone();
             let el = empty.clone();
-            let es = edge.clone();
             drop.connect_leave(move |_| {
-                if let Some(es) = &es {
-                    es.stop();
-                }
                 fr.remove_css_class("drop-active");
                 fb.set_gap(None);
                 // The "Empty" caption comes back with the next rebuild if
@@ -731,63 +728,6 @@ impl ChipZones {
     }
 }
 
-/// Scrolls a one-row zone while a dragged chip is held near either end of
-/// its frame, and keeps the gap under the pointer as the chips pass it.
-#[derive(Clone)]
-struct EdgeScroll {
-    adj: gtk::Adjustment,
-    flow: ChipFlow,
-    /// The pointer in the frame (not the scrolled row), while it is near
-    /// an edge.
-    at: Rc<std::cell::Cell<Option<(f64, f64)>>>,
-    timer: Rc<std::cell::RefCell<Option<gtk::glib::SourceId>>>,
-}
-
-impl EdgeScroll {
-    /// How near an end the pointer starts the scroll, and how far each
-    /// frame moves it.
-    const REACH: f64 = 48.0;
-    const STEP: f64 = 8.0;
-
-    fn new(adj: gtk::Adjustment, flow: &ChipFlow) -> Self {
-        EdgeScroll {
-            adj,
-            flow: flow.clone(),
-            at: Rc::new(std::cell::Cell::new(None)),
-            timer: Rc::new(std::cell::RefCell::new(None)),
-        }
-    }
-
-    /// The pointer moved to (`x`, `y`) on the row.
-    fn track(&self, x: f64, y: f64) {
-        let in_frame = x - self.adj.value();
-        let near = in_frame < Self::REACH || in_frame > self.adj.page_size() - Self::REACH;
-        self.at.set(near.then_some((in_frame, y)));
-        if near && self.timer.borrow().is_none() {
-            let me = self.clone();
-            let id = gtk::glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
-                let Some((in_frame, y)) = me.at.get() else {
-                    me.timer.borrow_mut().take();
-                    return gtk::glib::ControlFlow::Break;
-                };
-                let dir = if in_frame < Self::REACH { -1.0 } else { 1.0 };
-                let max = me.adj.upper() - me.adj.page_size();
-                me.adj.set_value((me.adj.value() + dir * Self::STEP).clamp(me.adj.lower(), max.max(0.0)));
-                me.flow.set_gap(Some(me.flow.insertion_index(in_frame + me.adj.value(), y)));
-                gtk::glib::ControlFlow::Continue
-            });
-            *self.timer.borrow_mut() = Some(id);
-        }
-    }
-
-    fn stop(&self) {
-        self.at.set(None);
-        if let Some(id) = self.timer.borrow_mut().take() {
-            id.remove();
-        }
-    }
-}
-
 /// The reader toolbar editor (Settings → Appearance → Toolbar): one drop
 /// zone per side plus a "not shown" pool.
 struct ToolbarEditor {
@@ -808,7 +748,6 @@ impl ToolbarEditor {
         let zones = ChipZones::build(
             host,
             &heads,
-            false,
             |zone, flow| zone_has_room(flow, TOOLBAR_ZONES[zone]),
             move |key, zone, index| {
                 let _ = input.send(PrefInput::ToolbarDrop { key, side: TOOLBAR_ZONES[zone], index });
@@ -835,7 +774,6 @@ impl ColumnEditor {
         let zones = ChipZones::build(
             host,
             &heads,
-            true,
             |_, _| true,
             move |key, zone, index| {
                 // The subject is the column that takes the room the others
@@ -1216,6 +1154,7 @@ pub enum PrefInput {
     ExportLog,
     ImportSettings,
     ChangeTrayIcon(u32),
+    ChangeLauncherBadge(u32),
     ChangeMessageTheme(u32),
     ChangeComposeFormat(u32),
     ChangeReplyPosition(u32),
@@ -1247,6 +1186,8 @@ pub enum PrefInput {
     LeaveEditorTo(String),
     /// Select a category by id from outside (the app's showcase hook).
     ShowPageById(String),
+    /// Message List, scrolled to its Columns group (#443).
+    RevealColumns,
     /// An accounts-panel editor subpage (account, filter or tag) opened on
     /// the named settings page, or closed — hide/show the shared header so
     /// the editor's own header takes over the window.
@@ -1319,6 +1260,8 @@ pub enum PrefOutput {
     SetPastePlain(bool),
     SetReturnParagraph(bool),
     SetToolbarExpanded(bool),
+    SetComposeFont(String),
+    SetComposeFontSize(u32),
     SetSpellcheck(bool),
     SetSpellcheckLangs(String),
     SetFetchInterval(u64),
@@ -1341,6 +1284,7 @@ pub enum PrefOutput {
     SetFilteredPlacement(crate::config::SectionPlacement),
     SetTagsPlacement(crate::config::SectionPlacement),
     SetConsoleMode(bool),
+    SetStatusBarTop(bool),
     SetReadMark(crate::config::ReadMark),
     ExportSettings,
     ExportLog,
@@ -1364,6 +1308,14 @@ pub enum PrefOutput {
     /// The single-line list's columns, in order (#334).
     SetListColumns(Vec<crate::config::ListColumn>),
     SetListHeadings(bool),
+    /// Scroll a single line too wide for the pane, or fit its columns (#443).
+    SetListColumnScroll(bool),
+    /// Date headings over a list sorted by date (#435).
+    SetGroupByDate(bool),
+    /// A card's tags and labels on a line under its text (#374).
+    SetPillsBelow(bool),
+    /// Keep the list's search field open (#446).
+    SetListSearchOpen(bool),
     /// Every column back to its own width (#334).
     ResetColumnWidths,
     SetSingleKey(bool),
@@ -1375,7 +1327,7 @@ pub enum PrefOutput {
     SetTray(bool),
     SetTrayIcon(TrayIcon),
     SetTrayMail(bool),
-    SetLauncherCount(bool),
+    SetLauncherBadge(LauncherBadge),
     SetAppIcon(String),
     SetPaletteCollapse(u64),
     SetCardPaletteCollapse(u64),
@@ -1386,6 +1338,7 @@ pub enum PrefOutput {
     SetPlainMonospace(bool),
     SetPlainFont(String),
     SetComposeFormat(crate::config::ComposeFormat),
+    SetFollowPlain(bool),
     SetReplyPosition(crate::config::ReplyPosition),
     SetSignaturePosition(crate::config::SignaturePosition),
     SetSignatureDashes(bool),
@@ -1626,8 +1579,16 @@ fn search_hit(page: &'static str, title: &str, subtitle: &str, place: &str, widg
     }
 }
 
+/// The class that keeps a row, and what it holds, out of the settings search.
+pub const NOT_SEARCHED: &str = "settings-not-searched";
+
 /// Walk a page for its groups and rows; `place` is where they sit so far.
 fn index_widget(page: &'static str, w: &gtk::Widget, place: &str, out: &mut Vec<SearchHit>) {
+    // Rows that list the user's data (OpenPGP keys) are not settings, and a
+    // keyring of other people's keys would bury the real results (#432).
+    if w.has_css_class(NOT_SEARCHED) {
+        return;
+    }
     let mut place = place.to_string();
     if let Some(group) = w.downcast_ref::<adw::PreferencesGroup>() {
         let title = group.title();
@@ -1681,6 +1642,16 @@ fn shown_in_page(w: &gtk::Widget) -> bool {
 
 /// Scroll a found row or group into view and mark it for a moment.
 fn reveal(w: &gtk::Widget) {
+    scroll_to(w);
+    w.add_css_class("settings-search-hit");
+    let w = w.clone();
+    gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(1600), move || {
+        w.remove_css_class("settings-search-hit");
+    });
+}
+
+/// Scroll a row or group of a page to the top of the view.
+fn scroll_to(w: &gtk::Widget) {
     if let Some(sw) = w.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>() {
         // Measured against what the viewport scrolls, not the viewport:
         // the viewport's own coordinates are already scrolled.
@@ -1696,11 +1667,6 @@ fn reveal(w: &gtk::Widget) {
             }
         }
     }
-    w.add_css_class("settings-search-hit");
-    let w = w.clone();
-    gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(1600), move || {
-        w.remove_css_class("settings-search-hit");
-    });
 }
 
 impl Preferences {
@@ -2935,6 +2901,37 @@ impl Component for Preferences {
                                         },
                                     },
 
+                                    #[name = "group_by_date_row"]
+                                    adw::SwitchRow {
+                                        set_title: &i18n("Group by date"),
+                                        set_subtitle: &i18n("Headings divide a list sorted by date into Today, \
+                                                       Yesterday, Last 7 days, Last 14 days and Older."),
+                                        connect_active_notify[sender] => move |row| {
+                                            let _ = sender.output(PrefOutput::SetGroupByDate(row.is_active()));
+                                        },
+                                    },
+
+                                    #[name = "pills_below_row"]
+                                    adw::SwitchRow {
+                                        set_title: &i18n("Tags and labels under the text"),
+                                        set_subtitle: &i18n("Puts a card's tags and labels on a line of their own \
+                                                       under its text, where they leave the subject its \
+                                                       full width."),
+                                        connect_active_notify[sender] => move |row| {
+                                            let _ = sender.output(PrefOutput::SetPillsBelow(row.is_active()));
+                                        },
+                                    },
+
+                                    #[name = "list_search_open_row"]
+                                    adw::SwitchRow {
+                                        set_title: &i18n("Keep the search field open"),
+                                        set_subtitle: &i18n("Shows the search field above the list at all times, \
+                                                       instead of behind the search button."),
+                                        connect_active_notify[sender] => move |row| {
+                                            let _ = sender.output(PrefOutput::SetListSearchOpen(row.is_active()));
+                                        },
+                                    },
+
                                     #[name = "tag_row_tint_row"]
                                     adw::SwitchRow {
                                         set_title: &i18n("Tint tagged messages"),
@@ -3020,6 +3017,7 @@ impl Component for Preferences {
 
                                 // The single-line list's columns (#334): two
                                 // drop zones of draggable chips, filled in init.
+                                #[name = "columns_group"]
                                 add = &adw::PreferencesGroup {
                                     set_title: &i18n("Columns"),
                                     set_description: Some(
@@ -3038,6 +3036,17 @@ impl Component for Preferences {
                                                        the list by it, and again to reverse the order."),
                                         connect_active_notify[sender] => move |row| {
                                             let _ = sender.output(PrefOutput::SetListHeadings(row.is_active()));
+                                        },
+                                    },
+
+                                    #[name = "list_fit_row"]
+                                    adw::SwitchRow {
+                                        set_title: &i18n("Fit columns to the list"),
+                                        set_subtitle: &i18n("The name and tag columns narrow as the list does. \
+                                                       Off, every column keeps its width and a list too narrow \
+                                                       for them scrolls sideways."),
+                                        connect_active_notify[sender] => move |row| {
+                                            let _ = sender.output(PrefOutput::SetListColumnScroll(!row.is_active()));
                                         },
                                     },
 
@@ -3511,12 +3520,42 @@ impl Component for Preferences {
                                     adw::ComboRow {
                                         set_title: &i18n("Write messages in"),
                                         set_subtitle: &i18n("What new messages, replies and forwards start \
-                                                       as. Markdown and HTML are written as source and \
-                                                       sent as formatted mail; plain text is sent without \
+                                                       as. Rich text is formatted as you type and sent as \
+                                                       HTML. Markdown and HTML source are written as source \
+                                                       and sent as formatted mail; plain text is sent without \
                                                        formatting. The composer's format button switches \
                                                        any one message."),
                                         connect_selected_notify[sender] => move |row| {
                                             sender.input(PrefInput::ChangeComposeFormat(row.selected()));
+                                        },
+                                    },
+
+                                    // Filled and connected in init: the
+                                    // list grows with the fonts picked
+                                    // through Other Font….
+                                    #[name = "compose_font_row"]
+                                    adw::ComboRow {
+                                        set_title: &i18n("Font"),
+                                        set_subtitle: &i18n("The font rich-text messages are \
+                                                       written and sent in. Default leaves \
+                                                       it to the recipient's own font."),
+                                    },
+
+                                    #[name = "compose_size_row"]
+                                    adw::ComboRow {
+                                        set_title: &i18n("Font size"),
+                                        set_subtitle: &i18n("The size, in points, rich-text \
+                                                       messages are written and sent in."),
+                                    },
+
+                                    #[name = "follow_plain_row"]
+                                    adw::SwitchRow {
+                                        set_title: &i18n("Reply in the original's format"),
+                                        set_subtitle: &i18n("Replies to and forwards of mail sent as \
+                                                       plain text are written in plain text. Other \
+                                                       mail starts in the format above."),
+                                        connect_active_notify[sender] => move |row| {
+                                            let _ = sender.output(PrefOutput::SetFollowPlain(row.is_active()));
                                         },
                                     },
 
@@ -3764,14 +3803,16 @@ impl Component for Preferences {
                                         },
                                     },
 
-                                    #[name = "launcher_count_row"]
-                                    adw::SwitchRow {
+                                    #[name = "launcher_badge_row"]
+                                    adw::ComboRow {
                                         set_title: &i18n("Unread count on the app icon"),
-                                        set_subtitle: &i18n("The number of unread inbox messages on Hylki's \
-                                                       icon in the dock or task manager. KDE Plasma shows it; \
-                                                       GNOME needs a dock extension such as Dash to Dock."),
-                                        connect_active_notify[sender] => move |row| {
-                                            let _ = sender.output(PrefOutput::SetLauncherCount(row.is_active()));
+                                        set_subtitle: &i18n("A number on Hylki's icon in the dock or task \
+                                                       manager: every unread inbox message, or only those \
+                                                       that arrived while Hylki was not in front. KDE Plasma \
+                                                       shows it; GNOME needs a dock extension such as Dash \
+                                                       to Dock."),
+                                        connect_selected_notify[sender] => move |row| {
+                                            sender.input(PrefInput::ChangeLauncherBadge(row.selected()));
                                         },
                                     },
 
@@ -3788,11 +3829,20 @@ impl Component for Preferences {
                                     #[name = "gmail_keys_row"]
                                     adw::SwitchRow {
                                         set_title: &i18n("Gmail keys"),
-                                        set_subtitle: &i18n("Single-key shortcuts as Gmail has them: j/k move \
-                                                       without opening, o opens, e archives, # deletes, g then \
-                                                       a letter goes to a folder."),
+                                        set_subtitle: &i18n("Needs single-key shortcuts on. Swaps in the keys \
+                                                       Gmail has: j/k move without opening, o opens, e archives, \
+                                                       # deletes, g then a letter goes to a folder."),
                                         connect_active_notify[sender] => move |row| {
                                             let _ = sender.output(PrefOutput::SetGmailKeys(row.is_active()));
+                                        },
+                                    },
+
+                                    #[name = "status_bar_row"]
+                                    adw::ComboRow {
+                                        set_title: &i18n("Status bar"),
+                                        set_subtitle: &i18n("Where the bar with errors and the console opens"),
+                                        connect_selected_notify[sender] => move |row| {
+                                            let _ = sender.output(PrefOutput::SetStatusBarTop(row.selected() == 1));
                                         },
                                     },
 
@@ -4045,6 +4095,7 @@ impl Component for Preferences {
             toolbar_editor: None,
             list_columns: init.list_columns.clone(),
             column_editor: None,
+            columns_group: None,
             list_single_possible: init.list_layout != crate::config::ListLayout::Cards,
             show_unified: init.show_unified,
             unified_kinds: init.unified_kinds,
@@ -4122,6 +4173,7 @@ impl Component for Preferences {
             &widgets.text_scale_row,
             &widgets.settings_open_row,
             &widgets.tray_icon_row,
+            &widgets.launcher_badge_row,
             &widgets.date_style_row,
             &widgets.clock_style_row,
             &widgets.language_row,
@@ -4265,6 +4317,10 @@ impl Component for Preferences {
         ])));
         no_truncate(&widgets.list_layout_row);
         widgets.list_headings_row.set_active(init.list_headings);
+        widgets.list_fit_row.set_active(!init.list_column_scroll);
+        widgets.group_by_date_row.set_active(init.list_group_by_date);
+        widgets.pills_below_row.set_active(init.list_pills_below);
+        widgets.list_search_open_row.set_active(init.list_search_open);
         widgets.list_layout_row.set_selected(match init.list_layout {
             crate::config::ListLayout::Cards => 0,
             crate::config::ListLayout::SingleLine => 1,
@@ -4365,7 +4421,16 @@ impl Component for Preferences {
             .unwrap_or(0);
         widgets.tray_icon_row.set_selected(tray_icon_sel as u32);
         widgets.tray_mail_row.set_active(init.tray_mail);
-        widgets.launcher_count_row.set_active(init.launcher_count);
+        let badge_labels: Vec<String> = LAUNCHER_BADGES.iter().map(|(l, _)| i18n(l)).collect();
+        let badge_labels: Vec<&str> = badge_labels.iter().map(String::as_str).collect();
+        widgets
+            .launcher_badge_row
+            .set_model(Some(&gtk::StringList::new(&badge_labels)));
+        let badge_sel = LAUNCHER_BADGES
+            .iter()
+            .position(|(_, b)| *b == init.launcher_badge)
+            .unwrap_or(1);
+        widgets.launcher_badge_row.set_selected(badge_sel as u32);
         // The icon choice and the menu's mail list only mean anything with
         // a tray icon shown.
         widgets.tray_icon_row.set_sensitive(init.tray);
@@ -4381,6 +4446,14 @@ impl Component for Preferences {
         tracing::debug!("settings window: prefs tail A (tray) at {:?}", t_init.elapsed());
         widgets.single_key_row.set_active(init.single_key_shortcuts);
         widgets.gmail_keys_row.set_active(init.gmail_keys);
+        // Gmail's keys are a kind of single-key shortcut, so they mean
+        // nothing with those off (#392): the switch keeps its state but
+        // greys out, as the tray's own options do.
+        widgets
+            .single_key_row
+            .bind_property("active", &widgets.gmail_keys_row, "sensitive")
+            .sync_create()
+            .build();
         widgets.keep_downloads_row.set_model(Some(&gtk::StringList::new(&[
             &i18n("Always"),
             &i18n("A year"),
@@ -4391,6 +4464,10 @@ impl Component for Preferences {
             KEEP_DOWNLOADS_DAYS.iter().position(|d| *d == init.keep_downloads_days).unwrap_or(0) as u32,
         );
         widgets.console_mode_row.set_active(init.console_mode);
+        widgets
+            .status_bar_row
+            .set_model(Some(&gtk::StringList::new(&[&i18n("Bottom of the window"), &i18n("Top of the window")])));
+        widgets.status_bar_row.set_selected(u32::from(init.status_bar_top));
         widgets.read_mark_row.set_model(Some(&gtk::StringList::new(&[
             i18n("When displayed").as_str(),
             i18n("After two seconds").as_str(),
@@ -4541,7 +4618,7 @@ impl Component for Preferences {
         widgets.compose_format_row.set_model(Some(&gtk::StringList::new(&[
             &i18n("Rich text"),
             &i18n("Markdown"),
-            &i18n("HTML"),
+            &i18n("HTML source"),
             &i18n("Plain text"),
         ])));
         no_truncate(&widgets.compose_format_row);
@@ -4551,6 +4628,23 @@ impl Component for Preferences {
             crate::config::ComposeFormat::Html => 2,
             crate::config::ComposeFormat::Plain => 3,
         });
+        compose_font_setup(&widgets.compose_font_row, &init.compose_font, sender.clone());
+        {
+            let row = &widgets.compose_size_row;
+            let sizes = crate::ui::rich_editor::SIZES;
+            let names: Vec<String> = std::iter::once(i18n("Default"))
+                .chain(sizes.iter().map(|pt| pt.to_string()))
+                .collect();
+            row.set_model(Some(&gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>())));
+            let at = sizes.iter().position(|pt| *pt == init.compose_font_size).map_or(0, |i| i + 1);
+            row.set_selected(at as u32);
+            let sender = sender.clone();
+            row.connect_selected_notify(move |row| {
+                let pt = row.selected().checked_sub(1).and_then(|i| sizes.get(i as usize)).copied().unwrap_or(0);
+                let _ = sender.output(PrefOutput::SetComposeFontSize(pt));
+            });
+        }
+        widgets.follow_plain_row.set_active(init.follow_plain);
         widgets.signature_position_row.set_model(Some(&gtk::StringList::new(&[
             &i18n("Above the quoted message"),
             &i18n("Below the quoted message"),
@@ -4850,6 +4944,7 @@ impl Component for Preferences {
         widen_page(widgets.appearance_page.upcast_ref(), 640);
         model.rebuild_toolbar_chips();
         model.column_editor = Some(ColumnEditor::build(&widgets.column_editor_box, &sender));
+        model.columns_group = Some(widgets.columns_group.clone().upcast());
         model.rebuild_column_chips();
         tracing::debug!("settings window: prefs tail E (sidebar rows built) at {:?}", t_init.elapsed());
         model.side_list = Some(widgets.side_list.clone());
@@ -5499,6 +5594,13 @@ impl Component for Preferences {
                     .unwrap_or_default();
                 let _ = sender.output(PrefOutput::SetTrayIcon(icon));
             }
+            PrefInput::ChangeLauncherBadge(index) => {
+                let badge = LAUNCHER_BADGES
+                    .get(index as usize)
+                    .map(|(_, b)| *b)
+                    .unwrap_or_default();
+                let _ = sender.output(PrefOutput::SetLauncherBadge(badge));
+            }
             PrefInput::ChangeListLayout(index) => {
                 let layout = match index {
                     1 => crate::config::ListLayout::SingleLine,
@@ -5553,6 +5655,14 @@ impl Component for Preferences {
                 }
             }
             PrefInput::ShowPageById(id) => self.select_row(&id),
+            PrefInput::RevealColumns => {
+                self.select_row("list");
+                // Once the page is shown and laid out, which the selection
+                // sets going, can the group be scrolled to.
+                if let Some(group) = self.columns_group.clone() {
+                    gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || scroll_to(&group));
+                }
+            }
             PrefInput::LeaveEditorPrompt(id) => self.ask_to_leave_editor(&id, &sender),
             PrefInput::LeaveEditorTo(id) => {
                 // The row the user clicked is already the selected one — the
@@ -5790,4 +5900,89 @@ fn sound_index(sound: &str) -> u32 {
         .iter()
         .position(|n| *n == sound)
         .unwrap_or(if sound == crate::config::CUSTOM_SOUND { crate::config::BUILTIN_SOUNDS.len() } else { 0 }) as u32
+}
+
+/// Settings → Composing → Font: the default, the composer's own fonts and
+/// the recent picks, each drawn in its own face, then Other Font…, which
+/// opens the font chooser and adds what it picks to the list (#358).
+fn compose_font_setup(row: &adw::ComboRow, current: &str, sender: ComponentSender<Preferences>) {
+    use std::cell::{Cell, RefCell};
+    struct State {
+        /// The CSS family list of each entry; Other Font… has none.
+        choices: RefCell<Vec<String>>,
+        /// The font in use, which the row goes back to when the chooser is
+        /// cancelled.
+        chosen: RefCell<String>,
+        /// Set while the list is rebuilt, which selects as it goes.
+        filling: Cell<bool>,
+    }
+    fn fill(row: &adw::ComboRow, state: &State) {
+        let chosen = state.chosen.borrow().clone();
+        let choices = crate::ui::rich_editor::compose_font_choices(&chosen);
+        let mut names: Vec<String> = choices.iter().map(|(_, name)| name.clone()).collect();
+        names.push(i18n("Other Font…"));
+        let at = choices.iter().position(|(css, _)| *css == chosen).unwrap_or(0);
+        *state.choices.borrow_mut() = choices.into_iter().map(|(css, _)| css).collect();
+        state.filling.set(true);
+        row.set_model(Some(&gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>())));
+        row.set_selected(at as u32);
+        state.filling.set(false);
+    }
+    let state = Rc::new(State {
+        choices: RefCell::new(Vec::new()),
+        chosen: RefCell::new(current.to_string()),
+        filling: Cell::new(false),
+    });
+
+    let list = gtk::SignalListItemFactory::new();
+    list.connect_setup(|_, item| {
+        if let Some(item) = item.downcast_ref::<gtk::ListItem>() {
+            let label = gtk::Label::new(None);
+            label.set_xalign(0.0);
+            item.set_child(Some(&label));
+        }
+    });
+    {
+        let state = state.clone();
+        list.connect_bind(move |_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+            let Some(label) = item.child().and_downcast::<gtk::Label>() else { return };
+            let name = item.item().and_downcast::<gtk::StringObject>().map(|s| s.string());
+            label.set_label(name.as_deref().unwrap_or(""));
+            label.set_attributes(None);
+            if let Some(css) = state.choices.borrow().get(item.position() as usize).filter(|css| !css.is_empty()) {
+                crate::ui::rich_editor::preview_font(&label, css);
+            }
+        });
+    }
+    row.set_list_factory(Some(&list));
+    fill(row, &state);
+
+    row.connect_selected_notify(move |row| {
+        if state.filling.get() {
+            return;
+        }
+        let picked = state.choices.borrow().get(row.selected() as usize).cloned();
+        if let Some(css) = picked {
+            *state.chosen.borrow_mut() = css.clone();
+            let _ = sender.output(PrefOutput::SetComposeFont(css));
+            return;
+        }
+        // Other Font…: the row goes back to the font in use until the
+        // chooser answers. Rebuilt on idle, not from inside its own signal.
+        let (row, state, sender) = (row.clone(), state.clone(), sender.clone());
+        gtk::glib::idle_add_local_once(move || {
+            fill(&row, &state);
+            let parent = row.root().and_downcast::<gtk::Window>();
+            crate::ui::rich_editor::choose_family(parent.as_ref(), move |family| {
+                let Some(family) = family else { return };
+                let font = crate::config::RecentFont { name: family.name().to_string(), mono: family.is_monospace() };
+                let css = crate::ui::rich_editor::recent_font_css(&font);
+                crate::config::note_recent_font(font);
+                *state.chosen.borrow_mut() = css.clone();
+                fill(&row, &state);
+                let _ = sender.output(PrefOutput::SetComposeFont(css));
+            });
+        });
+    });
 }

@@ -38,7 +38,7 @@ pub fn extract(body: &str) -> String {
     // A body with no markup at all is plain text, cached as it came: shown
     // line for line, as the ordinary view shows it (see `body_html`).
     if !body.contains('<') {
-        return format!("<div class=\"vireo-plain\">{}</div>", escape_text(body.trim_matches('\n')));
+        return format!("<div class=\"hylki-plain\">{}</div>", escape_text(body.trim_matches('\n')));
     }
     extract_blocks(body).concat()
 }
@@ -47,7 +47,7 @@ pub fn extract(body: &str) -> String {
 /// translation (#327) splits a long message at.
 pub fn extract_blocks(body: &str) -> Vec<String> {
     if !body.contains('<') {
-        return vec![format!("<div class=\"vireo-plain\">{}</div>", escape_text(body.trim_matches('\n')))];
+        return vec![format!("<div class=\"hylki-plain\">{}</div>", escape_text(body.trim_matches('\n')))];
     }
     let dom = html5ever::parse_document(RcDom::default(), Default::default()).one(body);
     let mut out = Vec::new();
@@ -77,7 +77,7 @@ fn stylesheet(dark: bool, accent: &str) -> String {
          body{{color:{fg};font:15px/1.6 system-ui,\"Adwaita Sans\",Cantarell,sans-serif;\
            overflow-wrap:anywhere;-webkit-font-smoothing:antialiased;background:transparent;\
            max-width:44em;margin:0 auto;padding:22px 26px 26px;box-sizing:border-box;}}\
-         p,ul,ol,dl,blockquote,pre,table,figure,.vireo-plain{{margin:0 0 1em;}}\
+         p,ul,ol,dl,blockquote,pre,table,figure,.hylki-plain{{margin:0 0 1em;}}\
          body>:last-child{{margin-bottom:0;}}\
          h1,h2,h3,h4,h5,h6{{margin:1.4em 0 0.5em;line-height:1.25;font-weight:700;}}\
          h1{{font-size:1.5em;}}h2{{font-size:1.3em;}}h3{{font-size:1.15em;}}\
@@ -103,7 +103,7 @@ fn stylesheet(dark: bool, accent: &str) -> String {
            vertical-align:top;}}\
          th{{font-weight:700;}}\
          figcaption,small{{font-size:0.85em;color:{muted};}}\
-         .vireo-plain{{white-space:pre-wrap;}}\
+         .hylki-plain{{white-space:pre-wrap;}}\
          mark{{background:rgba(229,165,10,0.35);color:inherit;}}\
          p,li,dt,dd,h1,h2,h3,h4,h5,h6,th,td,figcaption,div,pre{{unicode-bidi:plaintext;}}"
     )
@@ -160,7 +160,7 @@ impl Elem {
 
     /// Whitespace inside is meaningful (shown as written).
     fn keeps_space(&self) -> bool {
-        self.tag == "pre" || self.attrs.iter().any(|(k, v)| *k == "class" && v == "vireo-plain")
+        self.tag == "pre" || self.attrs.iter().any(|(k, v)| *k == "class" && v == "hylki-plain")
     }
 }
 
@@ -239,7 +239,7 @@ fn escape_text(s: &str) -> String {
 /// fold and the plain-text sheet look for. Nothing else of the sender's
 /// classes survives.
 const KEPT_CLASSES: [&str; 6] =
-    ["gmail_quote", "gmail_signature", "moz-signature", "vireo-quote-attr", "vireo-plain", "yahoo_quoted"];
+    ["gmail_quote", "gmail_signature", "moz-signature", "hylki-quote-attr", "hylki-plain", "yahoo_quoted"];
 const KEPT_IDS: [&str; 2] = ["divRplyFwdMsg", "Signature"];
 
 fn attr<'a>(attrs: &'a [html5ever::Attribute], name: &str) -> Option<&'a str> {
@@ -371,10 +371,10 @@ fn walk(node: &Handle, out: &mut Vec<Out>, pre: bool, in_link: bool) {
                 | "nav" | "center" | "address" | "details" | "summary" | "fieldset"
                 | "legend" | "body" | "html" => {
                     // A plain-text part keeps its line structure (#181): the
-                    // worker wraps it in `.vireo-plain`, and so does this.
+                    // worker wraps it in `.hylki-plain`, and so does this.
                     // (`body_html` puts the class on `<body>` itself for a
                     // plain-text message; that body becomes the div.)
-                    let plain = has_class(&attrs, "vireo-plain");
+                    let plain = has_class(&attrs, "hylki-plain");
                     if (tag == "body" || tag == "html") && !plain {
                         children(out, pre, in_link);
                     } else {
@@ -967,18 +967,18 @@ mod tests {
 
     #[test]
     fn plain_text_keeps_its_lines() {
-        let html = "<html><body><div class=\"vireo-plain\">line one\n\n  indented\n&gt; quoted</div></body></html>";
+        let html = "<html><body><div class=\"hylki-plain\">line one\n\n  indented\n&gt; quoted</div></body></html>";
         let out = extract(html);
-        assert_eq!(out, "<div class=\"vireo-plain\">line one\n\n  indented\n&gt; quoted</div>");
+        assert_eq!(out, "<div class=\"hylki-plain\">line one\n\n  indented\n&gt; quoted</div>");
     }
 
     #[test]
     fn raw_plain_text_keeps_its_lines_too() {
         let out = extract("Hi,\n\nTwo lines & a line\n  indented.\n");
-        assert_eq!(out, "<div class=\"vireo-plain\">Hi,\n\nTwo lines &amp; a line\n  indented.</div>");
+        assert_eq!(out, "<div class=\"hylki-plain\">Hi,\n\nTwo lines &amp; a line\n  indented.</div>");
         // The ordinary view's own plain wrapper (`body_html`) reads the same.
-        let wrapped = "<!doctype html><html><head></head><body class=\"vireo-plain\">a\n\nb</body></html>";
-        assert_eq!(extract(wrapped), "<div class=\"vireo-plain\">a\n\nb</div>");
+        let wrapped = "<!doctype html><html><head></head><body class=\"hylki-plain\">a\n\nb</body></html>";
+        assert_eq!(extract(wrapped), "<div class=\"hylki-plain\">a\n\nb</div>");
     }
 
     #[test]

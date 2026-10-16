@@ -74,6 +74,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.44.0" date="2026-10-15">
+      <description>
+        <p>Gmail keyboard shortcuts, a command palette, smart folders, several signatures per account, a Hylki address book, LDAP and Microsoft 365 directories as recipients, Gmail labels as colored pills, search results that name their folder, one sort and filter button, a list grouped by date, and more formatting in the composer. Italian is new; French and Spanish are complete.</p>
+      </description>
+    </release>
     <release version="1.43.2" date="2026-10-11">
       <description>
         <p>Plain-text mail declares UTF-8, signed mail sends over JMAP, an MP3 new-mail sound no longer crashes Hylki, and docks on X11 group its window with its launcher.</p>

@@ -1345,7 +1345,7 @@ mod tests {
     #[test]
     fn converts_a_composed_reply() {
         // The shape the rich editor hands over for a reply.
-        let html = "<div>Yes, agreed.</div><p class=\"vireo-quote-attr\">On Monday, Ada wrote:</p>\
+        let html = "<div>Yes, agreed.</div><p class=\"hylki-quote-attr\">On Monday, Ada wrote:</p>\
                     <blockquote><div>The original line.</div><div>And another.</div></blockquote>";
         let md = from_html(html);
         has(&md, "Yes, agreed.");

@@ -65,16 +65,6 @@ emaint sync -r bennypowers
 emerge -av mail-client/hylki
 ```
 
-## Nix
-
-A community-maintained flake lives in
-[tbaumann's fork](https://github.com/tbaumann/hylki) (thanks
-[@tbaumann](https://github.com/tbaumann)):
-
-```sh
-nix run github:tbaumann/hylki
-```
-
 ## Beta channel
 
 Flatpak betas install alongside the stable app as a separate application

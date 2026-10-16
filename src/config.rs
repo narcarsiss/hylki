@@ -353,6 +353,20 @@ pub fn sound_when_focused() -> bool {
 /// Service name used for keyring entries; password items are keyed by email.
 const KEYRING_SERVICE: &str = "co.hyprlab.Hylki";
 
+/// A protocol this build does not know reads as IMAP: an account written by
+/// another version (the EWS accounts of 1.44.0-beta.5) then shows up unable
+/// to connect, where it can be removed, instead of failing the whole file and
+/// with it every account.
+fn known_protocol<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Protocol, D::Error> {
+    let name = String::deserialize(d)?;
+    Ok(Protocol::deserialize(serde::de::value::StrDeserializer::<serde::de::value::Error>::new(&name)).unwrap_or_else(
+        |_| {
+            tracing::warn!("unknown account protocol {name:?}, read as IMAP");
+            Protocol::Imap
+        },
+    ))
+}
+
 /// Incoming-mail protocol for an account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -403,7 +417,7 @@ pub struct AccountConfig {
     pub name: String,
     pub email: String,
     /// Incoming-mail protocol (IMAP, POP3, Graph or JMAP).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "known_protocol")]
     pub protocol: Protocol,
     /// Incoming server host (IMAP, POP3 or JMAP, per `protocol`; a JMAP
     /// account may give a URL with its scheme).
@@ -471,12 +485,23 @@ pub struct AccountConfig {
     /// default (the separate Privacy switch covers other people's mail).
     #[serde(default)]
     pub gravatar: bool,
-    /// Composition signature appended to new messages from this account.
+    /// The signature put in new messages from this account: the default
+    /// one of `signatures`, written here too so an older Hylki still finds
+    /// it. A config from before #445 has only this.
     #[serde(default)]
     pub signature: Option<String>,
     /// Whether `signature` is HTML (vs. plain text).
     #[serde(default)]
     pub signature_html: bool,
+    /// Every signature the account has (#445), in the order the composer
+    /// offers them. Read through [`AccountConfig::signature_set`], which
+    /// also covers a config that has only `signature`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signatures: Vec<NamedSignature>,
+    /// Which of `signatures` new messages start with. None: they start
+    /// without one, and the composer's signature button puts one in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_signature: Option<usize>,
     /// How this account is labelled in the UI (e.g. the All Inboxes view).
     /// When unset, the email address is shown.
     #[serde(default)]
@@ -588,6 +613,17 @@ pub struct AccountConfig {
     /// be given them.
     #[serde(default, skip_serializing_if = "is_false")]
     pub graph_directory: bool,
+    /// Writing from this account, the suggestions are its directory's and
+    /// its own mail's only (#410): a work account then offers no one from
+    /// GNOME Contacts, an LDAP directory or another account's mail.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub graph_directory_only: bool,
+    /// A message's sensitivity label whose name the message leaves out is
+    /// named from the organization's list of labels, read through
+    /// Microsoft Graph (#411). Like `graph_directory`, only for an account
+    /// signed in within Hylki, with its scope asked for when turned on.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub graph_label_names: bool,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -596,6 +632,15 @@ fn is_zero(v: &u32) -> bool {
 
 fn is_true(b: &bool) -> bool {
     *b
+}
+
+/// One of an account's signatures (#445), named so the composer can offer
+/// it beside the others.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct NamedSignature {
+    pub name: String,
+    /// The signature as HTML.
+    pub html: String,
 }
 
 /// A send-as alias (#34): an extra From identity the composer offers. By
@@ -702,6 +747,33 @@ pub struct OAuthSettings {
 
 
 impl AccountConfig {
+    /// The account's signatures and the one new messages start with. A
+    /// config written before #445 holds a single `signature`, which is
+    /// both.
+    pub fn signature_set(&self) -> (Vec<NamedSignature>, Option<usize>) {
+        if self.signatures.is_empty() {
+            return match self.signature.as_deref().filter(|s| !s.trim().is_empty()) {
+                Some(html) => (
+                    vec![NamedSignature { name: crate::i18n::i18n("Signature"), html: html.to_string() }],
+                    Some(0),
+                ),
+                None => (Vec::new(), None),
+            };
+        }
+        let default = self.default_signature.filter(|i| *i < self.signatures.len());
+        (self.signatures.clone(), default)
+    }
+
+    /// Store `signatures`, with `default` the one new messages start with,
+    /// and keep `signature` in step for an older Hylki.
+    pub fn set_signatures(&mut self, signatures: Vec<NamedSignature>, default: Option<usize>) {
+        let default = default.filter(|i| *i < signatures.len());
+        self.signature = default.map(|i| signatures[i].html.clone());
+        self.signature_html = true;
+        self.default_signature = default;
+        self.signatures = signatures;
+    }
+
     /// The account's UI label: the custom label, or the email address.
     pub fn display_label(&self) -> String {
         match self.label.as_deref() {
@@ -1384,6 +1456,14 @@ pub(crate) struct PrivacyFile {
     /// rather than behind its chevron, the default.
     #[serde(default)]
     pub(crate) toolbar_expanded: bool,
+    /// The font rich-text messages are written and sent in, as a CSS family
+    /// list. Empty, the editor shows the interface font and the message
+    /// names none, so it reads in the recipient's own.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) compose_font: String,
+    /// Their text size in points; 0 leaves it to the recipient.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(crate) compose_font_size: u32,
     /// New messages start as plain text, without formatting (#180). Kept
     /// written so a version that predates `compose_format` still opens its
     /// composer the way this one was left.
@@ -1394,6 +1474,11 @@ pub(crate) struct PrivacyFile {
     /// where `compose_plain` above still says which of the two it is.
     #[serde(default)]
     pub(crate) compose_format: Option<ComposeFormat>,
+    /// Whether a reply or forward to mail that had no HTML part is written
+    /// in plain text whatever `compose_format` says (#436). Mailing lists
+    /// and the people on them often write plain text and expect it back.
+    #[serde(default)]
+    pub(crate) follow_plain: bool,
     /// Where the split reply opens in the reading pane (#212).
     #[serde(default)]
     pub(crate) reply_position: ReplyPosition,
@@ -1465,6 +1550,30 @@ pub(crate) struct PrivacyFile {
     /// Headings over those columns, which sort the list when clicked.
     #[serde(default)]
     pub(crate) list_headings: bool,
+    /// Columns keep their widths and a single line too wide for the pane
+    /// scrolls sideways (#443). Off, the default and the way it was, the
+    /// name columns narrow to fit.
+    #[serde(default)]
+    pub(crate) list_column_scroll: bool,
+    /// A list sorted by date is divided under Today, Yesterday, Last 7 days,
+    /// Last 14 days and Older (#435). On by default since 1.44, for
+    /// existing installs too (see `date_groups_default_applied`).
+    #[serde(default = "default_on")]
+    pub(crate) list_group_by_date: bool,
+    /// A card's tags and Gmail labels go on a line of their own under its
+    /// text, instead of at the end of the subject (#374).
+    #[serde(default)]
+    pub(crate) list_pills_below: bool,
+    /// Grouping by date was turned on once for an install from before it
+    /// became the default: every save writes every key, so those files
+    /// carry the old `false` without anyone having chosen it. A new
+    /// install starts with this set, so switching grouping off sticks.
+    #[serde(default)]
+    pub(crate) date_groups_default_applied: bool,
+    /// The search field stays above the list instead of hiding behind the
+    /// search button (#446). Off by default.
+    #[serde(default)]
+    pub(crate) list_search_open: bool,
     /// The widths columns were dragged to, in pixels, by column name.
     #[serde(default)]
     pub(crate) list_column_widths: std::collections::BTreeMap<String, i32>,
@@ -1500,9 +1609,14 @@ pub(crate) struct PrivacyFile {
     #[serde(default = "default_on")]
     pub(crate) tray_mail: bool,
     /// Whether the launcher icon in a dock or task manager shows the unread
-    /// count (#271).
+    /// count (#271). Kept written so a version that predates
+    /// `launcher_badge` still shows a badge when this one does.
     #[serde(default = "default_on")]
     pub(crate) launcher_count: bool,
+    /// What that count counts (#431). Absent on installs that predate the
+    /// choice, where `launcher_count` above says whether there is one.
+    #[serde(default)]
+    pub(crate) launcher_badge: Option<LauncherBadge>,
     /// Whether to say anything at all when remote content is blocked. Off hides
     /// the banner; it never changes what is blocked, only whether you're told.
     #[serde(default = "default_on")]
@@ -1557,6 +1671,10 @@ pub(crate) struct PrivacyFile {
     /// the status bar. Off by default.
     #[serde(default)]
     pub(crate) console_mode: bool,
+    /// The status bar at the top of the window rather than its foot (#433).
+    /// Off by default, for everyone: the key is new in 1.44.
+    #[serde(default)]
+    pub(crate) status_bar_top: bool,
     /// Read-marking policy (#100).
     #[serde(default)]
     pub(crate) read_mark: ReadMark,
@@ -1670,6 +1788,7 @@ impl Default for PrivacyFile {
             tags_placement: SectionPlacement::default(),
             chevrons_left: default_chevrons_left(),
             console_mode: false,
+            status_bar_top: false,
             read_mark: ReadMark::default(),
             files_action: FilesAction::default(),
             files_large: FilesLarge::default(),
@@ -1736,8 +1855,11 @@ impl Default for PrivacyFile {
             paste_plain: true,
             return_paragraph: false,
             toolbar_expanded: false,
+            compose_font: String::new(),
+            compose_font_size: 0,
             compose_plain: false,
             compose_format: None,
+            follow_plain: false,
             reply_position: ReplyPosition::default(),
             signature_position: SignaturePosition::default(),
             signature_dashes: false,
@@ -1756,6 +1878,11 @@ impl Default for PrivacyFile {
             list_layout: ListLayout::Cards,
             list_columns: default_list_columns(),
             list_headings: false,
+            list_column_scroll: false,
+            list_group_by_date: true,
+            list_pills_below: false,
+            date_groups_default_applied: true,
+            list_search_open: false,
             list_column_widths: Default::default(),
             single_key_shortcuts: false,
             gmail_keys: false,
@@ -1766,6 +1893,7 @@ impl Default for PrivacyFile {
             tray_icon: TrayIcon::default(),
             tray_mail: true,
             launcher_count: true,
+            launcher_badge: None,
             print: PrintOptions::default(),
         }
     }
@@ -1783,18 +1911,33 @@ pub(crate) fn load_privacy() -> PrivacyFile {
         return PrivacyFile::default();
     };
     let mut file = toml::from_str::<PrivacyFile>(&text).unwrap_or_default();
-    // The inset card for a lone message became the default on 2026-08-31
-    // for new installs only: every save writes every key, so an install
-    // from before then stayed on the full-bleed view without ever choosing
-    // it (#153). Apply the default once and remember that it was.
-    if !file.single_card_default_applied {
-        file.single_card_default_applied = true;
-        file.single_message_card = true;
+    if apply_new_defaults(&mut file) {
         if let Ok(toml) = toml::to_string_pretty(&file) {
             let _ = write_private(&path, &toml);
         }
     }
     file
+}
+
+/// Bring a file from before a default changed up to it, once: every save
+/// writes every key, so an older install carries the old value without
+/// anyone having chosen it. Whether anything changed.
+fn apply_new_defaults(file: &mut PrivacyFile) -> bool {
+    let mut changed = false;
+    // The inset card for a lone message became the default on 2026-08-31
+    // (#153).
+    if !file.single_card_default_applied {
+        file.single_card_default_applied = true;
+        file.single_message_card = true;
+        changed = true;
+    }
+    // Grouping the list by date, the default since 1.44 (#435).
+    if !file.date_groups_default_applied {
+        file.date_groups_default_applied = true;
+        file.list_group_by_date = true;
+        changed = true;
+    }
+    changed
 }
 
 
@@ -2168,6 +2311,20 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// The subject with any leading "Re:", "Fwd:" or "Fw:" (any case, repeated)
+/// taken off, and the whitespace around it.
+fn strip_reply_prefixes(subject: &str) -> &str {
+    const PREFIXES: [&str; 3] = ["re:", "fwd:", "fw:"];
+    let mut rest = subject.trim();
+    while let Some(next) = PREFIXES.iter().find_map(|p| {
+        let head = rest.get(..p.len())?;
+        head.eq_ignore_ascii_case(p).then(|| rest[p.len()..].trim_start())
+    }) {
+        rest = next;
+    }
+    rest.trim()
+}
+
 /// One condition of a [`FilterRule`]: what to look at, how, and for what.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(from = "FilterConditionDisk", into = "FilterConditionDisk")]
@@ -2456,6 +2613,41 @@ fn mailboxes(list: &str) -> Vec<String> {
 }
 
 impl FilterRule {
+    /// The rule the "Create Filter from Message…" entry starts the
+    /// editor with: the sender's address, and the subject without its
+    /// leading "Re:" / "Fwd:" so a whole thread matches. Both have to match;
+    /// what the rule does is left for the user to pick. A blank subject
+    /// leaves the sender as the only condition.
+    pub fn draft_from_message(account_email: &str, from_addr: &str, subject: &str) -> FilterRule {
+        let mut conditions = vec![FilterCondition {
+            field: FilterField::FromAddress,
+            matcher: FilterMatch::Equals,
+            value: from_addr.trim().to_string(),
+        }];
+        let subject = strip_reply_prefixes(subject);
+        if !subject.is_empty() {
+            conditions.push(FilterCondition {
+                field: FilterField::Subject,
+                matcher: FilterMatch::Contains,
+                value: subject.to_string(),
+            });
+        }
+        let mut rule = FilterRule {
+            name: String::new(),
+            account_email: account_email.to_string(),
+            field: FilterField::FromAddress,
+            matcher: FilterMatch::Equals,
+            value: String::new(),
+            more: Vec::new(),
+            any: false,
+            dest_path: String::new(),
+            tag: String::new(),
+            count_unread: count_unread_default(),
+        };
+        rule.set_conditions(conditions);
+        rule
+    }
+
     /// Every condition, the first included.
     pub fn conditions(&self) -> Vec<FilterCondition> {
         let mut all = Vec::with_capacity(1 + self.more.len());
@@ -3193,6 +3385,32 @@ pub enum SignaturePosition {
 }
 
 
+
+/// What the number on the launcher icon counts (#431).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LauncherBadge {
+    /// No badge.
+    Off,
+    /// Every unread message in the inboxes, as the tray icon's dot.
+    #[default]
+    AllUnread,
+    /// Inbox mail that arrived while the main window was not in front and
+    /// is still unread; back to none each time the window comes forward.
+    NewSinceFront,
+}
+
+impl PrivacyFile {
+    /// The launcher badge choice, falling back to the on/off switch it
+    /// replaced.
+    pub(crate) fn launcher_badge(&self) -> LauncherBadge {
+        self.launcher_badge.unwrap_or(if self.launcher_count {
+            LauncherBadge::AllUnread
+        } else {
+            LauncherBadge::Off
+        })
+    }
+}
 
 /// What new messages start out as, falling back to the plain-text
 /// switch this setting replaced (#180).
@@ -4022,6 +4240,36 @@ struct StateFile {
     /// (#343), keyed "address␟folder path".
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     unread_seen: std::collections::BTreeMap<String, u32>,
+    /// The fonts last picked with the composer's Other Font… (#358), the
+    /// newest first, for the font menu to offer again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recent_fonts: Vec<RecentFont>,
+}
+
+/// A font family picked in the composer (#358), and whether it is
+/// monospaced, which decides the generic family it falls back to.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct RecentFont {
+    pub name: String,
+    #[serde(default)]
+    pub mono: bool,
+}
+
+/// How many picked fonts the font menu keeps.
+const RECENT_FONTS: usize = 5;
+
+pub fn load_recent_fonts() -> Vec<RecentFont> {
+    load_state().recent_fonts
+}
+
+/// Put `font` at the head of the recent fonts, once, and keep the newest
+/// few.
+pub fn note_recent_font(font: RecentFont) {
+    update_state(|s| {
+        s.recent_fonts.retain(|f| !f.name.eq_ignore_ascii_case(&font.name));
+        s.recent_fonts.insert(0, font);
+        s.recent_fonts.truncate(RECENT_FONTS);
+    });
 }
 
 fn default_about_height() -> i32 {
@@ -4382,6 +4630,35 @@ pub fn save_contacts_pane_width(width: i32) {
 mod tests {
     use super::{decode_gallery_folder, encode_gallery_folder, ConfigFile, ListColumn, PrivacyFile, StateFile};
 
+    /// An account with a protocol this build does not know (an EWS account
+    /// from 1.44.0-beta.5) leaves the others readable.
+    #[test]
+    fn an_unknown_protocol_keeps_the_file_readable() {
+        let account = |email: &str, protocol: &str| {
+            format!("[[accounts]]\nname = \"\"\nemail = \"{email}\"\nimap_host = \"\"\nusername = \"\"\nprotocol = \"{protocol}\"\n")
+        };
+        let text = account("a@x", "ews") + &account("b@x", "jmap");
+        let cfg: ConfigFile = toml::from_str(&text).expect("parses");
+        assert_eq!(cfg.accounts.len(), 2);
+        assert_eq!(cfg.accounts[0].protocol, super::Protocol::Imap);
+        assert_eq!(cfg.accounts[1].protocol, super::Protocol::Jmap);
+    }
+
+    /// #431: a file from before the badge choice keeps what its switch
+    /// said, and the choice, once made, wins over the switch.
+    #[test]
+    fn launcher_badge_follows_the_old_switch() {
+        use super::LauncherBadge::*;
+        let read = |text: &str| toml::from_str::<PrivacyFile>(text).unwrap().launcher_badge();
+        assert_eq!(read(""), AllUnread);
+        assert_eq!(read("launcher_count = true"), AllUnread);
+        assert_eq!(read("launcher_count = false"), Off);
+        assert_eq!(read("launcher_count = true\nlauncher_badge = \"new_since_front\""), NewSinceFront);
+        assert_eq!(read("launcher_count = true\nlauncher_badge = \"off\""), Off);
+        let saved = PrivacyFile { launcher_count: true, launcher_badge: Some(NewSinceFront), ..Default::default() };
+        assert_eq!(read(&toml::to_string(&saved).unwrap()), NewSinceFront);
+    }
+
     /// #367: a sidebar file from before Favorites has none, and the list
     /// starts open; the entries come back in the order they were added.
     #[test]
@@ -4734,6 +5011,51 @@ mod filter_tests {
     }
 
     #[test]
+    fn draft_filter_matches_sender_and_subject() {
+        let rule = FilterRule::draft_from_message("me@x.org", "billing@shop.example", "Your invoice");
+        assert_eq!(rule.account_email, "me@x.org");
+        assert!(!rule.any, "both conditions have to match");
+        assert!(rule.dest_path.is_empty() && rule.tag.is_empty(), "the user picks what the rule does");
+        assert_eq!(
+            rule.conditions(),
+            vec![
+                FilterCondition {
+                    field: FilterField::FromAddress,
+                    matcher: FilterMatch::Equals,
+                    value: "billing@shop.example".into(),
+                },
+                FilterCondition {
+                    field: FilterField::Subject,
+                    matcher: FilterMatch::Contains,
+                    value: "Your invoice".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn draft_filter_strips_reply_and_forward_prefixes() {
+        let subject_of = |subject| {
+            FilterRule::draft_from_message("me@x.org", "a@b.org", subject).conditions()[1].value.clone()
+        };
+        assert_eq!(subject_of("Re: Invoice"), "Invoice");
+        assert_eq!(subject_of("RE: Fwd: re:  Invoice"), "Invoice");
+        assert_eq!(subject_of("Fw: Invoice"), "Invoice");
+        // Only a leading prefix goes; one inside the subject is the subject's own.
+        assert_eq!(subject_of("Invoice re: March"), "Invoice re: March");
+        assert_eq!(subject_of("Reminder: Invoice"), "Reminder: Invoice");
+    }
+
+    #[test]
+    fn draft_filter_skips_an_empty_subject() {
+        for subject in ["", "   ", "Re: ", "Fwd:"] {
+            let rule = FilterRule::draft_from_message("me@x.org", "a@b.org", subject);
+            assert_eq!(rule.conditions().len(), 1, "subject {subject:?} leaves the sender alone");
+            assert_eq!(rule.field, FilterField::FromAddress);
+        }
+    }
+
+    #[test]
     fn found_keywords_get_names_and_colors() {
         // Thunderbird's built-ins keep Thunderbird's names and colors.
         assert_eq!(Tag::name_for_keyword("$label1"), "Important");
@@ -4983,6 +5305,61 @@ dest_path = "Lists"
         assert!(!text.contains("any"), "{text}");
     }
 
+    /// Grouping by date is on for a new install and for one whose file
+    /// predates it, once; switched off afterwards, it stays off.
+    #[test]
+    fn date_groups_default_reaches_existing_installs_once() {
+        let mut old: PrivacyFile = toml::from_str("list_group_by_date = false\n").unwrap();
+        assert!(apply_new_defaults(&mut old));
+        assert!(old.list_group_by_date);
+        old.list_group_by_date = false;
+        let mut again: PrivacyFile = toml::from_str(&toml::to_string_pretty(&old).unwrap()).unwrap();
+        assert!(!apply_new_defaults(&mut again));
+        assert!(!again.list_group_by_date);
+        let mut fresh = PrivacyFile::default();
+        assert!(fresh.list_group_by_date);
+        fresh.list_group_by_date = false;
+        apply_new_defaults(&mut fresh);
+        assert!(!fresh.list_group_by_date);
+    }
+
+    /// An account from before #445 has one `signature`, which reads as a
+    /// list of one that new messages start with; a list written now keeps
+    /// `signature` on its default for an older Hylki, and no default
+    /// leaves it empty.
+    #[test]
+    fn signatures_read_old_configs_and_write_for_them() {
+        let old: AccountConfig = toml::from_str(
+            "name = \"A\"\nemail = \"a@b.c\"\nimap_host = \"h\"\nusername = \"a\"\n\
+             signature = \"<b>Ada</b>\"\nsignature_html = true\n",
+        )
+        .unwrap();
+        let (list, default) = old.signature_set();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].html, "<b>Ada</b>");
+        assert_eq!(default, Some(0));
+
+        let mut acc = old.clone();
+        let two = vec![
+            NamedSignature { name: "English".into(), html: "Regards".into() },
+            NamedSignature { name: "Deutsch".into(), html: "Grüße".into() },
+        ];
+        acc.set_signatures(two.clone(), Some(1));
+        assert_eq!(acc.signature.as_deref(), Some("Grüße"));
+        let back: AccountConfig = toml::from_str(&toml::to_string(&acc).unwrap()).unwrap();
+        assert_eq!(back.signature_set(), (two.clone(), Some(1)));
+
+        acc.set_signatures(two.clone(), None);
+        assert!(acc.signature.is_none());
+        let text = toml::to_string(&acc).unwrap();
+        assert!(!text.contains("default_signature"), "{text}");
+        let back: AccountConfig = toml::from_str(&text).unwrap();
+        assert_eq!(back.signature_set(), (two, None));
+
+        acc.set_signatures(Vec::new(), None);
+        assert!(!toml::to_string(&acc).unwrap().contains("signatures"));
+    }
+
     #[test]
     fn settings_bundle_roundtrip_parses() {
         // Parse-and-serialize only (no disk, no keyring): the wire format
@@ -5010,6 +5387,8 @@ dest_path = "Lists"
             gravatar: false,
             signature: None,
             signature_html: false,
+            signatures: Vec::new(),
+            default_signature: None,
             label: None,
             aliases: Vec::new(),
             enabled: true,
@@ -5033,6 +5412,8 @@ dest_path = "Lists"
             folder_sort: None,
             sign_by_default: false,
             graph_directory: false,
+            graph_directory_only: false,
+            graph_label_names: false,
         };
         acc.aliases = Vec::new();
         let bundle = SettingsBundle {

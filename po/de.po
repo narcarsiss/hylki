@@ -16,6 +16,44 @@ msgstr ""
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 "X-Generator: Poedit 3.9\n"
 
+msgid "Date (Newest first)"
+msgstr "Datum (Neueste zuerst)"
+
+msgid "Date (Oldest first)"
+msgstr "Datum (Ältester zuerst)"
+
+msgid "Sender (A–Z)"
+msgstr "Absender (A–Z)"
+
+msgid "Subject (A–Z)"
+msgstr "Betreff (A–Z)"
+
+msgid "Unread first"
+msgstr "Ungelesen zuerst"
+
+#, fuzzy
+msgid "Starred first"
+msgstr "Ungelesen zuerst"
+
+msgid "Sort by"
+msgstr "Sortieren nach"
+
+#, fuzzy
+msgid "Show only"
+msgstr "Nur ungelesen anzeigen"
+
+#, fuzzy
+msgid "Clear Filters"
+msgstr "Suchfilter"
+
+#, fuzzy
+msgid "Sort and filter messages"
+msgstr "{n} Nachrichten"
+
+#, fuzzy
+msgid "Filtered: {names}"
+msgstr "{name} entfernt"
+
 msgid "Refresh or long-press for Status Bar"
 msgstr "Aktualisieren oder lange drücken, um die Statusleiste anzuzeigen"
 
@@ -33,15 +71,6 @@ msgstr "Nachrichten durchsuchen (Strg+F)"
 
 msgid "Search, filters and sort"
 msgstr "Suchen, Filtern und Sortieren"
-
-msgid "Show only unread"
-msgstr "Nur ungelesen anzeigen"
-
-msgid "Show only starred"
-msgstr "Nur markierte anzeigen"
-
-msgid "Sort messages"
-msgstr "Nachrichten sortieren"
 
 msgid "Edit this message"
 msgstr "Diese Nachricht bearbeiten"
@@ -129,25 +158,6 @@ msgstr "Seitenleiste ein- oder ausblenden"
 
 msgid "Keyboard Shortcuts"
 msgstr "Tastenkombinationen"
-
-msgid "Date (Newest first)"
-msgstr "Datum (Neueste zuerst)"
-
-msgid "Date (Oldest first)"
-msgstr "Datum (Ältester zuerst)"
-
-msgid "Sender (A–Z)"
-msgstr "Absender (A–Z)"
-
-msgid "Subject (A–Z)"
-msgstr "Betreff (A–Z)"
-
-msgid "Unread first"
-msgstr "Ungelesen zuerst"
-
-#, fuzzy
-msgid "Starred first"
-msgstr "Ungelesen zuerst"
 
 msgid "Create Folder"
 msgstr "Ordner erstellen"
@@ -326,6 +336,10 @@ msgstr "Konsole"
 msgid "About"
 msgstr "Über Hylki"
 
+#, fuzzy
+msgid "Select a conversation first."
+msgstr "Unterhaltung löschen"
+
 msgid "Remove Tags"
 msgstr "Tags entfernen"
 
@@ -437,6 +451,14 @@ msgstr "Ordner sortieren"
 
 #, fuzzy
 msgid ""
+"Single-key shortcuts are switched off, and Gmail keys with them. Turn them "
+"on in Settings → System."
+msgstr ""
+"Einzeltasten-Kürzel sind deaktiviert. Aktivieren Sie sie unter Einstellungen "
+"→ System & Erscheinungsbild."
+
+#, fuzzy
+msgid ""
 "Single-key shortcuts are switched off. Turn them on in Settings → System."
 msgstr ""
 "Einzeltasten-Kürzel sind deaktiviert. Aktivieren Sie sie unter Einstellungen "
@@ -480,6 +502,10 @@ msgstr "In den Posteingang verschieben"
 msgid "Search Messages…"
 msgstr "Nachrichten durchsuchen…"
 
+#, fuzzy
+msgid "Filter"
+msgstr "Filter"
+
 msgid "Sort"
 msgstr "Sortieren"
 
@@ -495,6 +521,10 @@ msgstr "Tag bearbeiten"
 
 msgid "Add Sender to Contacts"
 msgstr "Absender zu Kontakten hinzufügen"
+
+#, fuzzy
+msgid "Create Filter from Message…"
+msgstr "Nachricht drucken…"
 
 msgid "Block Remote Content"
 msgstr "Externe Inhalte blockieren"
@@ -1005,22 +1035,46 @@ msgstr "Vollständige Versionshinweise auf GitHub"
 msgid "Move around"
 msgstr "Navigation"
 
-msgid "Move down or up the list without opening"
+msgid ""
+"Move down or up the list without opening; while reading, open the next or "
+"previous conversation"
 msgstr ""
 
 #, fuzzy
 msgid "Open the message the cursor is on"
 msgstr "Öffnet die Nachricht zum Weiterleiten."
 
-msgid "Back to the message list"
-msgstr "Zurück zur Nachrichtenliste"
+#, fuzzy
+msgid "Close the conversation, back to the list"
+msgstr "Gesamte Unterhaltung"
 
 #, fuzzy
 msgid "Next or previous message in the conversation"
 msgstr "Vorherige Nachricht im Gespräch"
 
-msgid "Go to Inbox, Starred, Sent, Drafts or Archive"
-msgstr ""
+#, fuzzy
+msgid "Expand or collapse every message of the conversation"
+msgstr "Vorherige Nachricht im Gespräch"
+
+#, fuzzy
+msgid "Go to Inbox"
+msgstr "In den Posteingang verschieben"
+
+#, fuzzy
+msgid "Go to Starred"
+msgstr "Nicht installiert"
+
+#, fuzzy
+msgid "Go to Sent"
+msgstr "Zu Kontakten hinzufügen"
+
+#, fuzzy
+msgid "Go to Drafts"
+msgstr "Unter Entwürfe speichern"
+
+#, fuzzy
+msgid "Go to Archive"
+msgstr "Archivieren"
 
 #, fuzzy
 msgid "Go to Contacts"
@@ -1035,23 +1089,50 @@ msgstr "Nachrichtenaktionen"
 msgid "Reply to all"
 msgstr "Allen antworten"
 
+#, fuzzy
+msgid "Archive the conversation"
+msgstr "Gesamte Unterhaltung"
+
+#, fuzzy
+msgid "Archive the conversation and open the older one"
+msgstr "Gesamte Unterhaltung"
+
+#, fuzzy
+msgid "Archive the conversation and open the newer one"
+msgstr "Gesamte Unterhaltung"
+
 msgid "Mark as spam"
 msgstr "Als Spam markieren"
 
 msgid "Star or unstar"
 msgstr "Stern hinzufügen oder entfernen"
 
-msgid "Mark as read"
-msgstr "Als gelesen markieren"
+#, fuzzy
+msgid "Mark the conversation as read"
+msgstr "Gesamte Unterhaltung"
 
-msgid "Mark as unread"
-msgstr "Als ungelesen markieren"
+#, fuzzy
+msgid "Mark the conversation as unread and close it"
+msgstr "Als gelesen oder ungelesen markieren"
 
-msgid "Select this row (for a bulk action)"
+#, fuzzy
+msgid "Mark as unread from this message on and close it"
+msgstr "Jetzt versuchen, diese Nachricht zu senden"
+
+#, fuzzy
+msgid "Select this row without opening it"
 msgstr "Diese Zeile auswählen (für eine Sammelaktion)"
 
 msgid "Select every row, or none"
 msgstr ""
+
+#, fuzzy
+msgid "Select the read or the unread conversations"
+msgstr "Unterhaltung löschen"
+
+#, fuzzy
+msgid "Select the starred or the unstarred conversations"
+msgstr "Nächste Nachricht im Gespräch"
 
 #, fuzzy
 msgid "Move to a folder"
@@ -1065,8 +1146,23 @@ msgstr ""
 "Hinzufügen oder Entfernen eines Tags (die ersten neun, in der Reihenfolge "
 "der Einstellungen)"
 
+#, fuzzy
+msgid "Reply, or reply to all, in a window"
+msgstr "Im Hauptfenster antworten und weiterleiten"
+
+#, fuzzy
+msgid "Forward in a window"
+msgstr "Im Hauptfenster antworten und weiterleiten"
+
 msgid "Compose"
 msgstr "Verfassen"
+
+#, fuzzy
+msgid "Compose in a window"
+msgstr "Im Hauptfenster verfassen"
+
+msgid "Check for new mail"
+msgstr "Auf neue Nachrichten prüfen"
 
 msgid "Next message"
 msgstr "Nächste Nachricht"
@@ -1077,6 +1173,9 @@ msgstr "Vorherige Nachricht"
 msgid "Open the selected message"
 msgstr "Öffnen Sie die ausgewählte Nachricht"
 
+msgid "Back to the message list"
+msgstr "Zurück zur Nachrichtenliste"
+
 msgid "Next message in the conversation"
 msgstr "Nächste Nachricht im Gespräch"
 
@@ -1085,6 +1184,9 @@ msgstr "Vorherige Nachricht im Gespräch"
 
 msgid "Mark read or unread"
 msgstr "Als gelesen oder ungelesen markieren"
+
+msgid "Select this row (for a bulk action)"
+msgstr "Diese Zeile auswählen (für eine Sammelaktion)"
 
 msgid "Remove every tag"
 msgstr "Alle Tags entfernen"
@@ -1167,6 +1269,9 @@ msgstr "Beenden Sie Hylki ganz"
 msgid "Command palette: search actions, folders and tags"
 msgstr ""
 
+msgid "Command palette, actions only"
+msgstr ""
+
 msgid "This list"
 msgstr "Diese Liste"
 
@@ -1232,6 +1337,9 @@ msgid "{n} unread message"
 msgid_plural "{n} unread messages"
 msgstr[0] "{n} ungelesene Nachricht"
 msgstr[1] "{n} ungelesene Nachrichten"
+
+msgid "Signature"
+msgstr "Signatur"
 
 msgid "Custom Order"
 msgstr "Benutzerdefinierte Reihenfolge"
@@ -1304,6 +1412,14 @@ msgstr "{date} um {time}"
 msgid "Evolution Data Server is not available"
 msgstr "Evolution Data Server ist nicht verfügbar"
 
+#, fuzzy
+msgid ""
+"The directory cannot be searched without signing in. Add a sign-in in "
+"Settings → LDAP Directories."
+msgstr ""
+"Für das Verzeichnis ist ein Passwort erforderlich. Fügen Sie es unter "
+"Einstellungen → LDAP-Verzeichnisse hinzu."
+
 msgid "The directory did not accept the password."
 msgstr "Das Verzeichnis hat das Passwort nicht akzeptiert."
 
@@ -1335,6 +1451,9 @@ msgid "The directory needs a password. Add it in Settings → LDAP Directories."
 msgstr ""
 "Für das Verzeichnis ist ein Passwort erforderlich. Fügen Sie es unter "
 "Einstellungen → LDAP-Verzeichnisse hinzu."
+
+msgid "{name} did not answer: {error}"
+msgstr "{name} hat nicht geantwortet: {error}"
 
 msgid "A contact needs a name or an email address"
 msgstr ""
@@ -1670,8 +1789,10 @@ msgid "The sender marked this message “{label}”."
 msgstr ""
 
 msgid ""
-"The sender's organization labeled this message, without saying the label's "
-"name. Hylki shows the label but does not apply its rules."
+"The sender's organization labeled this message without naming the label in "
+"it. For a Microsoft 365 account, turning on “Show sensitivity label names” "
+"in its settings shows the name. Hylki shows the label but does not apply its "
+"rules."
 msgstr ""
 
 msgid ""
@@ -2097,17 +2218,29 @@ msgstr ""
 msgid "Add Alias…"
 msgstr "Alias hinzufügen…"
 
-msgid "Signature"
+#, fuzzy
+msgid "Signatures"
 msgstr "Signatur"
 
-msgid "Appended to new messages sent from this account."
-msgstr "Wird an neue Nachrichten dieses Kontos angehängt."
+msgid ""
+"Put in messages sent from this account. With more than one, the composer's "
+"signature button lists them."
+msgstr ""
 
-msgid "Edit HTML…"
-msgstr "HTML bearbeiten…"
+#, fuzzy
+msgid "Add Signature"
+msgstr "Signatur"
 
 msgid "Import File…"
 msgstr "Datei importieren…"
+
+#, fuzzy
+msgid "Delete Signature"
+msgstr "Signatur importieren"
+
+#, fuzzy
+msgid "Start messages with this signature"
+msgstr "Neue Nachricht mit der Datei als Anhang beginnen"
 
 msgid "Syncing"
 msgstr "Synchronisierung"
@@ -2146,8 +2279,32 @@ msgid ""
 msgstr ""
 
 #, fuzzy
+msgid "Microsoft 365"
+msgstr "Microsoft 365 / Outlook"
+
+#, fuzzy
 msgid "Search the organization directory"
 msgstr "Verzeichnis speichern?"
+
+msgid "Suggest people from your organization as you type a recipient."
+msgstr ""
+
+#, fuzzy
+msgid "Suggest only from this account"
+msgstr "Nur dieses Konto anzeigen"
+
+msgid ""
+"Writing from this account, suggest people from the directory and from its "
+"own mail, not from Contacts, LDAP directories or other accounts."
+msgstr ""
+
+msgid "Show sensitivity label names"
+msgstr ""
+
+msgid ""
+"Name a message's label from your organization's list when the message gives "
+"only its ID."
+msgstr ""
 
 msgid "Folder Order"
 msgstr "Reihenfolge der Ordner"
@@ -2158,9 +2315,6 @@ msgid ""
 msgstr ""
 "So werden die Ordner dieses Kontos in der Seitenleiste sortiert. Dies gilt "
 "auch für das Kontextmenü unter der Überschrift „Ordner“."
-
-msgid "Sort by"
-msgstr "Sortieren nach"
 
 msgid "Special Folders"
 msgstr "Spezielle Ordner"
@@ -2254,6 +2408,13 @@ msgstr ""
 "Ihr Passwort wird im System-Keyring (Secret-Service) gespeichert, niemals im "
 "Klartext auf der Festplatte."
 
+#, fuzzy
+msgid "Edit HTML"
+msgstr "HTML bearbeiten…"
+
+msgid "Edit the signature's HTML source"
+msgstr ""
+
 msgid "Follow Settings"
 msgstr "Einstellungen folgen"
 
@@ -2289,19 +2450,13 @@ msgstr "Browser wird geöffnet… Schließen Sie die Anmeldung dort ab."
 msgid "Approve access to the directory in the window that opened."
 msgstr "Konnte die Anmeldung nicht im Schlüsselring speichern: {e}"
 
-msgid "Signature HTML"
-msgstr "HTML-Signatur"
+#, fuzzy
+msgid "Opening browser… approve access to the sensitivity labels there."
+msgstr "Browser wird geöffnet… Schließen Sie die Anmeldung dort ab."
 
-msgid ""
-"Paste or edit the signature's HTML. Scripts and style sheets are removed; "
-"inline styles, tables and images are kept."
-msgstr ""
-"Fügen Sie das HTML der Signatur ein oder bearbeiten Sie es. Skripte und "
-"Stylesheets werden entfernt; Inline-Styles, Tabellen und Bilder bleiben "
-"erhalten."
-
-msgid "Apply"
-msgstr "Anwenden"
+#, fuzzy
+msgid "Approve access to the sensitivity labels in the window that opened."
+msgstr "Konnte die Anmeldung nicht im Schlüsselring speichern: {e}"
 
 msgid "Import Signature"
 msgstr "Signatur importieren"
@@ -2314,6 +2469,10 @@ msgstr "Datei konnte nicht gelesen werden"
 
 msgid "OK"
 msgstr "OK"
+
+#, fuzzy
+msgid "Signature {n}"
+msgstr "Signatur"
 
 msgid "Enter a client ID and sign in before saving"
 msgstr "Geben Sie eine Client-ID ein und melden Sie sich vor dem Speichern an"
@@ -2332,14 +2491,16 @@ msgstr "✓ Angemeldet – speichern Sie das Konto, um den Vorgang abzuschließe
 msgid "Sign-in failed: {e}"
 msgstr "Anmeldung fehlgeschlagen: {e}"
 
-#, fuzzy
-msgid "Signed in as {address}, not {email}."
-msgstr "Angemeldet als {who}. {terms}"
-
 msgid "Access to the directory approved. Save the account to finish."
 msgstr ""
 
 msgid "Access to the directory was not approved: {e}"
+msgstr ""
+
+msgid "Access to the sensitivity labels approved. Save the account to finish."
+msgstr ""
+
+msgid "Access to the sensitivity labels was not approved: {e}"
 msgstr ""
 
 msgid "✓ SMTP: connected"
@@ -2347,6 +2508,11 @@ msgstr "✓ SMTP: verbunden"
 
 msgid "✗ SMTP: {e}"
 msgstr "✗ SMTP: {e}"
+
+#. The one label on the row goes when there is no width for it, the
+#. same trade the header makes when it folds.
+msgid "Preview"
+msgstr "Vorschau"
 
 msgid "Show"
 msgstr "Anzeigen"
@@ -2442,16 +2608,19 @@ msgid "Use this account in Hylki"
 msgstr "Verwenden Sie dieses Konto in Hylki"
 
 msgid ""
-"Only for an account signed in within Hylki. To use it, add this account with "
-"Microsoft 365 / Outlook as the provider, instead of from GNOME Online "
+"Only for an account signed in within Hylki. To use these, add this account "
+"with Microsoft 365 / Outlook as the provider, instead of from GNOME Online "
 "Accounts."
 msgstr ""
 
 msgid ""
-"Suggest people from your organization as you type a recipient. Turning this "
-"on asks Microsoft for access to the directory; some organizations need an "
-"administrator to approve it."
+"Turning one of these on asks Microsoft for access; some organizations need "
+"an administrator to approve it."
 msgstr ""
+
+#, fuzzy
+msgid "Signed in as {address}, not {email}."
+msgstr "Angemeldet als {who}. {terms}"
 
 msgid "Never"
 msgstr "Nie"
@@ -3362,13 +3531,15 @@ msgstr "Formatierter Text"
 msgid "Markdown"
 msgstr "Markdown"
 
-msgid "HTML"
-msgstr "HTML"
+#, fuzzy
+msgid "HTML source"
+msgstr "Quelltext anzeigen"
 
 msgid "Plain text"
 msgstr "Nur Text"
 
-msgid "Format as you type, with the toolbar"
+#, fuzzy
+msgid "Format as you type; it is sent as HTML"
 msgstr "Beim Schreiben mit der Symbolleiste formatieren"
 
 msgid "Write Markdown; it is sent as formatted mail"
@@ -3410,11 +3581,11 @@ msgstr ""
 msgid "Save as Template"
 msgstr "Als reinen Text einfügen"
 
-msgid "Delete Draft"
-msgstr "Entwurf löschen"
-
 msgid "Move this draft to Trash"
 msgstr "Diesen Entwurf in den Papierkorb verschieben"
+
+msgid "Delete Draft"
+msgstr "Entwurf löschen"
 
 msgid "Schedule"
 msgstr "Planen"
@@ -3446,6 +3617,9 @@ msgstr "Mit OpenPGP für jeden Empfängerschlüssel verschlüsseln"
 msgid "Sign with your OpenPGP key"
 msgstr "Mit Ihrem OpenPGP-Schlüssel signieren"
 
+#. Save Draft, Save as Template and Delete Draft are not here:
+#. the Save Draft button and its arrow stay in the header at
+#. any width.
 msgid "Attach files"
 msgstr "Dateien anhängen"
 
@@ -3481,11 +3655,6 @@ msgstr "Antwort an"
 
 msgid "Writing in {format}"
 msgstr "Schreiben in {format}"
-
-#. The one label on the row goes when there is no width for it, the
-#. same trade the header makes when it folds.
-msgid "Preview"
-msgstr "Vorschau"
 
 msgid "Show the message as it will be sent"
 msgstr "Zeigen Sie die Nachricht, wie sie gesendet wird"
@@ -3539,6 +3708,10 @@ msgid "Typing"
 msgstr "Eingabe"
 
 #, fuzzy
+msgid "No Signature"
+msgstr "Signatur"
+
+#, fuzzy
 msgid "Insert Before the Text"
 msgstr "In Text einfügen"
 
@@ -3581,6 +3754,16 @@ msgstr ""
 #, fuzzy
 msgid "Could not translate"
 msgstr "Nachricht konnte nicht mit Tag versehen werden: {e}"
+
+#, fuzzy
+msgid "Switch to plain text?"
+msgstr "Als reinen Text einfügen"
+
+msgid "Formatting, images and links are removed."
+msgstr ""
+
+msgid "Switch"
+msgstr ""
 
 msgid "Cannot send with OpenPGP"
 msgstr "Kann nicht mit OpenPGP senden"
@@ -3728,6 +3911,10 @@ msgstr "Vorname"
 msgid "Last name"
 msgstr "Nachname"
 
+#, fuzzy
+msgid "In Directories"
+msgstr "LDAP-Verzeichnisse"
+
 msgid "Delete Contact?"
 msgstr "Kontakt löschen?"
 
@@ -3746,6 +3933,12 @@ msgstr "Bearbeiten"
 msgid "Delete…"
 msgstr "Löschen…"
 
+msgid "Type three letters or more to search the directory."
+msgstr ""
+
+msgid "Nobody in the directory matches."
+msgstr ""
+
 msgid "View photo"
 msgstr "Foto ansehen"
 
@@ -3761,6 +3954,10 @@ msgstr ""
 #. ---- note ----
 msgid "Note"
 msgstr ""
+
+#, fuzzy
+msgid "Directory"
+msgstr "Verzeichnis hinzufügen"
 
 #, fuzzy
 msgid "Address Book"
@@ -3815,10 +4012,11 @@ msgstr "LDAP-Verzeichnisse"
 msgid "LDAP directories"
 msgstr "LDAP-Verzeichnisse"
 
+#, fuzzy
 msgid ""
 "The composer looks up recipients in these directories as you type an "
-"address. They are kept by Evolution Data Server, so a directory set up in "
-"Evolution is listed here too."
+"address, and a search in Contacts looks in them too. They are kept by "
+"Evolution Data Server, so a directory set up in Evolution is listed here too."
 msgstr ""
 "Der Komponist sucht während der Eingabe einer Adresse in diesen "
 "Verzeichnissen nach Empfängern. Diese werden vom Evolution Data Server "
@@ -3851,9 +4049,6 @@ msgstr ""
 
 msgid "Connected to {name}"
 msgstr "Verbunden mit {name}"
-
-msgid "{name} did not answer: {error}"
-msgstr "{name} hat nicht geantwortet: {error}"
 
 msgid "The server took too long to answer."
 msgstr ""
@@ -4018,14 +4213,55 @@ msgstr "{name} · {current} von {total}"
 msgid "me"
 msgstr "Name"
 
-msgid "Choose which folders to search"
-msgstr "Wählen Sie aus, welche Ordner gesucht werden sollen"
+#, fuzzy
+msgid "All folders (except trash & junk)"
+msgstr "Ordner durchsuchen"
+
+#, fuzzy
+msgid "Everywhere"
+msgstr "Oder wo"
+
+msgid "This folder"
+msgstr "Dieser Ordner"
 
 msgid "All folders"
 msgstr "Alle Ordner"
 
-msgid "This folder"
-msgstr "Dieser Ordner"
+msgid ""
+"Every folder of every account, except Trash and Junk. A search started in "
+"Trash or Junk looks there too."
+msgstr ""
+
+msgid "Every folder of every account, Trash and Junk included."
+msgstr ""
+
+msgid "Only the folder or view the list is showing."
+msgstr ""
+
+msgid "What this searches"
+msgstr ""
+
+#, fuzzy
+msgid "Has Attachments"
+msgstr "Keine Anhänge"
+
+#, fuzzy
+msgid "Addressed to Me"
+msgstr "Adressbuch"
+
+#, fuzzy
+msgid "From Contacts"
+msgstr "Keine Kontakte"
+
+#, fuzzy
+msgid "High Importance"
+msgstr "Schlüssel importieren"
+
+msgid "Today"
+msgstr ""
+
+msgid "Choose which folders to search"
+msgstr "Wählen Sie aus, welche Ordner gesucht werden sollen"
 
 msgid "Clear selection"
 msgstr "Auswahl aufheben"
@@ -4033,8 +4269,20 @@ msgstr "Auswahl aufheben"
 msgid "No Messages"
 msgstr "Keine Nachrichten"
 
+#, fuzzy
+msgid "No Matching Messages"
+msgstr "Keine Nachrichten"
+
 msgid "There's nothing here right now."
 msgstr "Im Moment ist hier nichts."
+
+#, fuzzy
+msgid "No message here passes the filters."
+msgstr "Neueste Nachricht zuerst"
+
+#, fuzzy
+msgid "Customize Columns…"
+msgstr "Symbolleiste anpassen…"
 
 msgid "Remove Stars"
 msgstr "Sterne entfernen"
@@ -4049,12 +4297,31 @@ msgid "Mark All as Unread"
 msgstr "Alle als ungelesen markieren"
 
 #, fuzzy
-msgid "Search all folders"
+msgid "Search all folders but Trash and Junk"
+msgstr "Ordner durchsuchen"
+
+#, fuzzy
+msgid "Search all folders, Trash and Junk too"
 msgstr "Ordner durchsuchen"
 
 #, fuzzy
 msgid "Search this folder"
 msgstr "Ordner durchsuchen"
+
+#, fuzzy
+msgid "Yesterday"
+msgstr "Gestern"
+
+#, fuzzy
+msgid "Last 7 days"
+msgstr "Nachname"
+
+msgid "Last 14 days"
+msgstr ""
+
+#, fuzzy
+msgid "Older"
+msgstr "Ordner"
 
 msgid "Due"
 msgstr ""
@@ -4069,6 +4336,13 @@ msgstr ""
 msgid "Low importance"
 msgstr "Schlüssel importiert"
 
+#, fuzzy
+msgid "In {folder}"
+msgstr "Jeden Ordner anzeigen"
+
+msgid "Mark as read"
+msgstr "Als gelesen markieren"
+
 msgid "Move to…"
 msgstr "Verschieben nach…"
 
@@ -4077,6 +4351,9 @@ msgstr "Nicht Spam"
 
 msgid "Add sender to Contacts"
 msgstr "Absender zu Kontakten hinzufügen"
+
+msgid "Mark as unread"
+msgstr "Als ungelesen markieren"
 
 msgid "Remove star"
 msgstr "Stern entfernen"
@@ -4153,6 +4430,24 @@ msgstr "Diese Nachricht stammt aus einer Mailingliste."
 #, fuzzy
 msgid "Translate"
 msgstr "Übersetzt von"
+
+#, fuzzy
+msgid "{n} conversation selected"
+msgid_plural "{n} conversations selected"
+msgstr[0] "Löschen von Unterhaltungen bestätigen"
+msgstr[1] "Löschen von Unterhaltungen bestätigen"
+
+#, fuzzy
+msgid "{n} message selected"
+msgid_plural "{n} messages selected"
+msgstr[0] "Keine Nachricht ausgewählt"
+msgstr[1] "Keine Nachricht ausgewählt"
+
+msgid "No draft selected"
+msgstr "Kein Entwurf ausgewählt"
+
+msgid "No message selected"
+msgstr "Keine Nachricht ausgewählt"
 
 msgid "Received"
 msgstr ""
@@ -4290,11 +4585,8 @@ msgstr "{name} lehnte diese Einladung ab."
 msgid "Save…"
 msgstr "Speichern…"
 
-msgid "No draft selected"
-msgstr "Kein Entwurf ausgewählt"
-
-msgid "No message selected"
-msgstr "Keine Nachricht ausgewählt"
+msgid "The actions above the list apply to all of them."
+msgstr ""
 
 msgid "Choose a draft from the list to edit it here."
 msgstr "Wählen Sie einen Entwurf aus der Liste, um ihn hier zu bearbeiten."
@@ -4522,11 +4814,11 @@ msgstr ""
 msgid "Clear all"
 msgstr "Alles löschen"
 
-msgid "Collapse status bar"
-msgstr "Statusleiste einklappen"
-
 msgid "Export log"
 msgstr "Protokoll exportieren"
+
+msgid "Collapse status bar"
+msgstr "Statusleiste einklappen"
 
 msgid "Status bar ({n})"
 msgstr "Statusleiste ({n})"
@@ -4748,6 +5040,13 @@ msgstr "App-Symbol"
 
 msgid "Symbolic"
 msgstr "Symbolisch"
+
+#, fuzzy
+msgid "All unread inbox mail"
+msgstr "Ungelesene Nachrichten zählen"
+
+msgid "New since last in front"
+msgstr ""
 
 msgid "Follow system"
 msgstr "Systemeinstellung verwenden"
@@ -5016,9 +5315,6 @@ msgid ""
 "The address book a contact made in Hylki goes to, unless another is picked "
 "when it is made."
 msgstr ""
-
-msgid "Check for new mail"
-msgstr "Auf neue Nachrichten prüfen"
 
 msgid ""
 "Receives messages the moment they arrive. Microsoft 365 accounts check at "
@@ -5525,6 +5821,30 @@ msgstr ""
 "Wie viel von jeder Nachricht unter ihrem Betreff angezeigt werden soll. "
 "Ausgeschaltet werden auch Vorschauen, die heruntergeladen werden."
 
+msgid "Group by date"
+msgstr ""
+
+msgid ""
+"Headings divide a list sorted by date into Today, Yesterday, Last 7 days, "
+"Last 14 days and Older."
+msgstr ""
+
+msgid "Tags and labels under the text"
+msgstr ""
+
+msgid ""
+"Puts a card's tags and labels on a line of their own under its text, where "
+"they leave the subject its full width."
+msgstr ""
+
+msgid "Keep the search field open"
+msgstr ""
+
+msgid ""
+"Shows the search field above the list at all times, instead of behind the "
+"search button."
+msgstr ""
+
 #, fuzzy
 msgid "Tint tagged messages"
 msgstr "{n} Nachricht mit Tag versehen"
@@ -5613,6 +5933,15 @@ msgstr ""
 msgid ""
 "Names the columns above the list. Click one to sort the list by it, and "
 "again to reverse the order."
+msgstr ""
+
+#, fuzzy
+msgid "Fit columns to the list"
+msgstr "Lassen Sie einen Knopf hier, um es zu verstecken"
+
+msgid ""
+"The name and tag columns narrow as the list does. Off, every column keeps "
+"its width and a list too narrow for them scrolls sideways."
 msgstr ""
 
 msgid "Group messages by conversation"
@@ -5976,14 +6305,40 @@ msgstr "Absender immer zulassen"
 msgid "Write messages in"
 msgstr "Nachrichten schreiben als"
 
+#, fuzzy
 msgid ""
-"What new messages, replies and forwards start as. Markdown and HTML are "
-"written as source and sent as formatted mail; plain text is sent without "
-"formatting. The composer's format button switches any one message."
+"What new messages, replies and forwards start as. Rich text is formatted as "
+"you type and sent as HTML. Markdown and HTML source are written as source "
+"and sent as formatted mail; plain text is sent without formatting. The "
+"composer's format button switches any one message."
 msgstr ""
 "Markdown und HTML werden als Quelle geschrieben und als formatierte Mail "
 "gesendet; Klartext wird ohne Formatierung gesendet. Der Format-Button des "
 "Komponisten schaltet eine beliebige Nachricht um."
+
+msgid "Font"
+msgstr ""
+
+msgid ""
+"The font rich-text messages are written and sent in. Default leaves it to "
+"the recipient's own font."
+msgstr ""
+
+#, fuzzy
+msgid "Font size"
+msgstr "Textgröße"
+
+msgid "The size, in points, rich-text messages are written and sent in."
+msgstr ""
+
+#, fuzzy
+msgid "Reply in the original's format"
+msgstr "Antworten mit den Dateien"
+
+msgid ""
+"Replies to and forwards of mail sent as plain text are written in plain "
+"text. Other mail starts in the format above."
+msgstr ""
 
 msgid "Signature in replies"
 msgstr "Signatur in Antworten"
@@ -6199,10 +6554,11 @@ msgstr ""
 msgid "Unread count on the app icon"
 msgstr "Anzahl ungelesener Nachrichten auf dem App-Symbol"
 
+#, fuzzy
 msgid ""
-"The number of unread inbox messages on Hylki's icon in the dock or task "
-"manager. KDE Plasma shows it; GNOME needs a dock extension such as Dash to "
-"Dock."
+"A number on Hylki's icon in the dock or task manager: every unread inbox "
+"message, or only those that arrived while Hylki was not in front. KDE Plasma "
+"shows it; GNOME needs a dock extension such as Dash to Dock."
 msgstr ""
 "Die Anzahl ungelesener Nachrichten im Posteingang auf dem Hylki-Symbol im "
 "Dock oder in der Fensterleiste. KDE Plasma zeigt sie direkt an; unter GNOME "
@@ -6223,8 +6579,15 @@ msgid "Gmail keys"
 msgstr "E-Mail-Adresse"
 
 msgid ""
-"Single-key shortcuts as Gmail has them: j/k move without opening, o opens, e "
-"archives, # deletes, g then a letter goes to a folder."
+"Needs single-key shortcuts on. Swaps in the keys Gmail has: j/k move without "
+"opening, o opens, e archives, # deletes, g then a letter goes to a folder."
+msgstr ""
+
+#, fuzzy
+msgid "Status bar"
+msgstr "Statusleiste ({n})"
+
+msgid "Where the bar with errors and the console opens"
 msgstr ""
 
 msgid "Console mode"
@@ -6422,6 +6785,14 @@ msgstr ""
 msgid "30 days"
 msgstr ""
 
+#, fuzzy
+msgid "Bottom of the window"
+msgstr "Im Hauptfenster verfassen"
+
+#, fuzzy
+msgid "Top of the window"
+msgstr "Im Hauptfenster verfassen"
+
 msgid "When displayed"
 msgstr "Wenn angezeigt"
 
@@ -6547,6 +6918,9 @@ msgstr "Schwung"
 msgid "Custom File"
 msgstr "Eigene Datei"
 
+msgid "Other Font…"
+msgstr ""
+
 msgid "Print Message"
 msgstr "Nachricht drucken"
 
@@ -6640,16 +7014,6 @@ msgstr "Benutzerdefinierte Farbe…"
 
 msgid "Paragraph style"
 msgstr ""
-
-msgid "Font"
-msgstr ""
-
-msgid "Other Font…"
-msgstr ""
-
-#, fuzzy
-msgid "Font size"
-msgstr "Textgröße"
 
 msgid "Bold"
 msgstr "Fett"
@@ -6765,11 +7129,22 @@ msgstr "Konto entfernen…"
 msgid "Show or hide sub-folders"
 msgstr "Unterordner ein- oder ausblenden"
 
+#, fuzzy
+msgid "Show or hide labels"
+msgstr "Tags ein- oder ausblenden"
+
 msgid "Show or hide folders"
 msgstr "Ordner ein- oder ausblenden"
 
+#, fuzzy
+msgid "Labels ({len})"
+msgstr "Ordner ({len})"
+
 msgid "Folders ({len})"
 msgstr "Ordner ({len})"
+
+msgid "Labels"
+msgstr ""
 
 msgid "Sort Folders"
 msgstr "Ordner sortieren"
@@ -7462,6 +7837,57 @@ msgstr "Der einheitliche Posteingang im Lichtmodus"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#, fuzzy
+#~ msgid ""
+#~ "New messages, replies and forwards. The composer's signature button puts "
+#~ "in any signature by hand."
+#~ msgstr ""
+#~ "Neue Nachrichten, Antworten und Weiterleitungen werden erst nach der "
+#~ "Anmeldung angezeigt."
+
+#~ msgid "Signature HTML"
+#~ msgstr "HTML-Signatur"
+
+#~ msgid ""
+#~ "Paste or edit the signature's HTML. Scripts and style sheets are removed; "
+#~ "inline styles, tables and images are kept."
+#~ msgstr ""
+#~ "Fügen Sie das HTML der Signatur ein oder bearbeiten Sie es. Skripte und "
+#~ "Stylesheets werden entfernt; Inline-Styles, Tabellen und Bilder bleiben "
+#~ "erhalten."
+
+#~ msgid "Apply"
+#~ msgstr "Anwenden"
+
+#~ msgid "Appended to new messages sent from this account."
+#~ msgstr "Wird an neue Nachrichten dieses Kontos angehängt."
+
+#~ msgid "HTML"
+#~ msgstr "HTML"
+
+#~ msgid "Sort messages"
+#~ msgstr "Nachrichten sortieren"
+
+#~ msgid "Show only starred"
+#~ msgstr "Nur markierte anzeigen"
+
+#, fuzzy
+#~ msgid "unknown folder {path}"
+#~ msgstr "Jeden Ordner anzeigen"
+
+#, fuzzy
+#~ msgid "message not found"
+#~ msgstr "Schriftart der Nachricht"
+
+#, fuzzy
+#~ msgid "Could not delete messages: {e}"
+#~ msgstr "Nachricht konnte nicht gelöscht werden: {e}"
+
+#, fuzzy
+#~ msgid "An Exchange account can't receive mail from another account yet"
+#~ msgstr ""
+#~ "Ein POP3-Konto kann keine E-Mails von einem anderen Konto übernehmen"
 
 #, fuzzy
 #~ msgid "Import contacts…"

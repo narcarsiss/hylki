@@ -316,8 +316,34 @@ pub fn day_key(ts: i64) -> (i32, i32) {
         .unwrap_or_default()
 }
 
-/// Now, as a timestamp.
+/// The local midnights that start today, yesterday, the last 7 days and the
+/// last 14 days, today included in both (#435). Counted in calendar days,
+/// so a day an hour short or long for daylight saving still starts at
+/// midnight.
+pub fn day_starts(now: i64) -> [i64; 4] {
+    let midnight = local(now).and_then(|dt| {
+        glib::DateTime::new(&dt.timezone(), dt.year(), dt.month(), dt.day_of_month(), 0, 0, 0.0).ok()
+    });
+    let Some(midnight) = midnight else {
+        let today = now - now.rem_euclid(86_400);
+        return [today, today - 86_400, today - 6 * 86_400, today - 13 * 86_400];
+    };
+    let back = |days: i32| midnight.add_days(-days).map(|d| d.to_unix()).unwrap_or(i64::MIN);
+    [midnight.to_unix(), back(1), back(6), back(13)]
+}
+
+/// Now, as a timestamp. The demo's mail is dated in October 2025; a
+/// showcase can set the clock it is read against with `HYLKI_DEMO_NOW`
+/// (Unix seconds).
 pub fn now() -> i64 {
+    static DEMO_NOW: std::sync::OnceLock<Option<i64>> = std::sync::OnceLock::new();
+    let demo = DEMO_NOW.get_or_init(|| {
+        std::env::var_os("HYLKI_DEMO")?;
+        std::env::var("HYLKI_DEMO_NOW").ok()?.parse().ok()
+    });
+    if let Some(ts) = demo {
+        return *ts;
+    }
     glib::DateTime::now_local().map(|d| d.to_unix()).unwrap_or_default()
 }
 

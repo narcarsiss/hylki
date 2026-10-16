@@ -14,8 +14,25 @@
 use super::*;
 
 pub(super) const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
-/// Summaries listed per folder (matches the POP3 path's indexing appetite).
-pub(super) const GRAPH_INDEX_CAP: usize = 300;
+/// The newest summaries a folder load lists, for a quick first paint; the
+/// background index fetches the rest of the folder (#429).
+pub(super) const GRAPH_FIRST_PAGE: usize = 300;
+/// Ids asked for per page of a folder's id-only listing; Graph may serve
+/// fewer, and its next-page link carries on from there.
+const GRAPH_ID_PAGE: usize = 1000;
+/// Summaries one background step asks for (#429): one request's worth,
+/// so a click is never queued behind more than that.
+const GRAPH_BACKFILL_CHUNK: usize = 500;
+/// A run of missing mail shorter than this is fetched message by message
+/// rather than by its dates.
+const GRAPH_RANGE_MIN: usize = 3;
+/// How many times a throttled request waits and tries again.
+const GRAPH_THROTTLE_TRIES: u32 = 4;
+/// How long a folder's id listing is trusted before opening the folder
+/// lists it again, catching mail deleted elsewhere (#429).
+const GRAPH_RELIST_AFTER: Duration = Duration::from_secs(15 * 60);
+/// The pause after a background step fails, before the next try.
+const GRAPH_BACKFILL_BACKOFF: Duration = Duration::from_secs(60);
 
 /// One Graph mail folder, flattened out of the tree.
 struct GraphFolder {
@@ -57,23 +74,60 @@ fn graph_wired<T>(method: &str, url: &str, r: &Result<T, String>) {
     }
 }
 
+/// How long Microsoft asks a throttled client to wait: `Retry-After`, in
+/// seconds, on a 429 or a 503, within reason. `None` for any other answer.
+fn graph_throttle_wait(e: &ureq::Error) -> Option<Duration> {
+    match e {
+        ureq::Error::Status(429 | 503, resp) => {
+            let secs = resp
+                .header("Retry-After")
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(5);
+            Some(Duration::from_secs(secs.min(120)))
+        }
+        _ => None,
+    }
+}
+
+/// A GET that respects throttling: a 429 or 503 waits as long as the
+/// server asks and tries again, a few times, before it counts as failed.
+/// The background index (#429) is what makes this matter: it is the first
+/// thing here to send many requests in a row.
+fn graph_get(token: &str, url: &str) -> Result<ureq::Response, String> {
+    let mut tries = 0;
+    loop {
+        match ureq::get(url).set("Authorization", &graph_auth(token)).call() {
+            Err(e) if tries < GRAPH_THROTTLE_TRIES => {
+                let Some(wait) = graph_throttle_wait(&e) else { return Err(graph_err(e)) };
+                tries += 1;
+                tracing::info!(target: "hylki::graph", "throttled, waiting {} s", wait.as_secs());
+                std::thread::sleep(wait);
+            }
+            r => return r.map_err(graph_err),
+        }
+    }
+}
+
 fn graph_get_json(token: &str, url: &str) -> Result<serde_json::Value, String> {
     graph_wire("GET", url);
-    let r = ureq::get(url)
-        .set("Authorization", &graph_auth(token))
-        .call()
-        .map_err(graph_err)
-        .and_then(|resp| resp.into_json().map_err(|e| e.to_string()));
+    let r = graph_get(token, url).and_then(|resp| resp.into_json().map_err(|e| e.to_string()));
     graph_wired("GET", url, &r);
     r
 }
 
+/// [`graph_get_json`], with a 404 as `None`: a message that has gone since
+/// it was listed (moved, deleted) is no failure.
+fn graph_get_json_opt(token: &str, url: &str) -> Result<Option<serde_json::Value>, String> {
+    match graph_get_json(token, url) {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if e.starts_with("Microsoft Graph returned 404") => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 fn graph_get_bytes(token: &str, url: &str) -> Result<Vec<u8>, String> {
     graph_wire("GET", url);
-    let resp = ureq::get(url)
-        .set("Authorization", &graph_auth(token))
-        .call()
-        .map_err(graph_err);
+    let resp = graph_get(token, url);
     graph_wired("GET", url, &resp);
     let resp = resp?;
     let mut out = Vec::new();
@@ -138,6 +192,15 @@ pub(super) fn graph_delete_req(token: &str, url: &str) -> Result<(), String> {
 
 /// Follow `@odata.nextLink` pagination, collecting `value` arrays up to `cap`.
 pub(super) fn graph_paged(token: &str, first_url: &str, cap: usize) -> Result<Vec<serde_json::Value>, String> {
+    graph_paged_more(token, first_url, cap).map(|(items, _)| items)
+}
+
+/// [`graph_paged`], saying too whether the server had more than `cap`.
+fn graph_paged_more(
+    token: &str,
+    first_url: &str,
+    cap: usize,
+) -> Result<(Vec<serde_json::Value>, bool), String> {
     let mut out = Vec::new();
     let mut url = first_url.to_string();
     loop {
@@ -145,13 +208,15 @@ pub(super) fn graph_paged(token: &str, first_url: &str, cap: usize) -> Result<Ve
         if let Some(items) = page["value"].as_array() {
             out.extend(items.iter().cloned());
         }
+        let next = page["@odata.nextLink"].as_str();
         if out.len() >= cap {
+            let more = out.len() > cap || next.is_some();
             out.truncate(cap);
-            return Ok(out);
+            return Ok((out, more));
         }
-        match page["@odata.nextLink"].as_str() {
+        match next {
             Some(next) => url = next.to_string(),
-            None => return Ok(out),
+            None => return Ok((out, false)),
         }
     }
 }
@@ -346,19 +411,181 @@ fn graph_due(flag: &serde_json::Value) -> i64 {
         .unwrap_or(0)
 }
 
-/// List a folder's newest summaries (newest first).
+/// List a folder's newest summaries (newest first), up to
+/// [`GRAPH_FIRST_PAGE`], and whether the folder holds more than that.
 fn graph_list_messages(
     token: &str,
+    base: &str,
     folder_graph_id: &str,
     account_id: u32,
     folder_id: u32,
-) -> Result<Vec<(Message, String)>, String> {
+) -> Result<(Vec<(Message, String)>, bool), String> {
     let url = format!(
-        "{GRAPH_BASE}/me/mailFolders/{folder_graph_id}/messages\
+        "{base}/me/mailFolders/{folder_graph_id}/messages\
          ?$top=100&$orderby=receivedDateTime%20desc&{GRAPH_MSG_SELECT}"
     );
-    let items = graph_paged(token, &url, GRAPH_INDEX_CAP)?;
+    let (items, more) = graph_paged_more(token, &url, GRAPH_FIRST_PAGE)?;
+    Ok((items.iter().filter_map(|v| graph_message(v, account_id, folder_id)).collect(), more))
+}
+
+/// The first page of a folder's id-only listing (#429): every message's id
+/// and arrival time, newest first, a thousand to a page.
+fn graph_ids_url(base: &str, folder_graph_id: &str) -> String {
+    format!(
+        "{base}/me/mailFolders/{folder_graph_id}/messages\
+         ?$top={GRAPH_ID_PAGE}&$orderby=receivedDateTime%20desc&$select=id,receivedDateTime"
+    )
+}
+
+/// One page of an id-only listing: (Graph id, `receivedDateTime`) pairs,
+/// and the link to the next page, if there is one.
+fn graph_id_page(token: &str, url: &str) -> Result<(Vec<(String, String)>, Option<String>), String> {
+    let page = graph_get_json(token, url)?;
+    let ids = page["value"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| {
+            let id = v["id"].as_str()?.to_string();
+            Some((id, v["receivedDateTime"].as_str().unwrap_or("").to_string()))
+        })
+        .collect();
+    Ok((ids, page["@odata.nextLink"].as_str().map(str::to_string)))
+}
+
+/// Every message id in a folder, page by page.
+fn graph_list_ids(token: &str, base: &str, folder_graph_id: &str) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    let mut url = graph_ids_url(base, folder_graph_id);
+    loop {
+        let (ids, next) = graph_id_page(token, &url)?;
+        out.extend(ids);
+        match next {
+            Some(next) => url = next,
+            None => return Ok(out),
+        }
+    }
+}
+
+/// A stretch of mail the cache lacks (#429), consecutive in the folder's
+/// newest-first order, with the arrival times that bound it.
+#[derive(Clone, Debug, PartialEq)]
+struct GraphRun {
+    ids: Vec<String>,
+    newest: String,
+    oldest: String,
+}
+
+/// What a folder's complete id listing (newest first) asks of the cache:
+/// the rows to drop, and the runs of mail to fetch, newest first, none
+/// longer than [`GRAPH_BACKFILL_CHUNK`]. `since` is when the listing began.
+fn graph_index_plan(
+    server: &[(String, String)],
+    cached: &std::collections::HashMap<u32, i64>,
+    since: i64,
+) -> (Vec<u32>, Vec<GraphRun>) {
+    let uids: std::collections::HashSet<u32> = server.iter().map(|(id, _)| hash_uid(id)).collect();
+    let gone = listing_gone(cached, &uids, since);
+    let mut runs: Vec<GraphRun> = Vec::new();
+    let mut open = false;
+    for (id, at) in server {
+        if cached.contains_key(&hash_uid(id)) {
+            open = false;
+            continue;
+        }
+        match runs.last_mut() {
+            Some(run) if open && run.ids.len() < GRAPH_BACKFILL_CHUNK => {
+                run.ids.push(id.clone());
+                run.oldest = at.clone();
+            }
+            _ => runs.push(GraphRun { ids: vec![id.clone()], newest: at.clone(), oldest: at.clone() }),
+        }
+        open = true;
+    }
+    (gone, runs)
+}
+
+/// The summaries of one run of missing mail. A long run is one listing of
+/// the folder between its dates (which may bring a cached neighbour sharing
+/// a date along, harmlessly); a short one, or one without dates, is asked
+/// for message by message, and a message gone since the listing is skipped.
+fn graph_fetch_run(
+    token: &str,
+    base: &str,
+    folder_graph_id: &str,
+    run: &GraphRun,
+    account_id: u32,
+    folder_id: u32,
+) -> Result<Vec<(Message, String)>, String> {
+    let dated = run.ids.len() >= GRAPH_RANGE_MIN && !run.newest.is_empty() && !run.oldest.is_empty();
+    let items = if dated {
+        let url = format!(
+            "{base}/me/mailFolders/{folder_graph_id}/messages\
+             ?$filter=receivedDateTime%20ge%20{}%20and%20receivedDateTime%20le%20{}\
+             &$orderby=receivedDateTime%20desc&$top={GRAPH_BACKFILL_CHUNK}&{GRAPH_MSG_SELECT}",
+            crate::percent::encode(&run.oldest),
+            crate::percent::encode(&run.newest),
+        );
+        // Bounded, should many messages share the run's end dates.
+        graph_paged(token, &url, run.ids.len() + GRAPH_BACKFILL_CHUNK)?
+    } else {
+        let mut items = Vec::new();
+        for id in &run.ids {
+            let url = format!("{base}/me/messages/{id}?{GRAPH_MSG_SELECT}");
+            items.extend(graph_get_json_opt(token, &url)?);
+        }
+        items
+    };
     Ok(items.iter().filter_map(|v| graph_message(v, account_id, folder_id)).collect())
+}
+
+/// The messages in a folder with a Message-ID, wherever they are in it: a
+/// filter, not a listing, so mail older than the first page is found too.
+/// `exact` is the id as it was spelt, without its angle brackets.
+fn graph_find_by_msgid(
+    token: &str,
+    base: &str,
+    folder_graph_id: &str,
+    exact: &str,
+) -> Result<Vec<(Message, String)>, String> {
+    let literal = format!("'<{}>'", exact.replace('\'', "''"));
+    let url = format!(
+        "{base}/me/mailFolders/{folder_graph_id}/messages\
+         ?$filter=internetMessageId%20eq%20{}&$top=10&{GRAPH_MSG_SELECT}",
+        crate::percent::encode(&literal)
+    );
+    let items = graph_paged(token, &url, 10)?;
+    Ok(items.iter().filter_map(|v| graph_message(v, 0, 0)).collect())
+}
+
+/// The background index of one folder (#429): its id-only listing a page a
+/// step, then its runs of missing mail a run a step.
+struct GraphBackfill {
+    path: String,
+    phase: GraphBackfillPhase,
+    /// Whether the list has already been told the folder's index is done:
+    /// a pass that re-checks a finished folder, or one that kept failing.
+    told: bool,
+    /// Steps that failed in a row.
+    failures: u32,
+}
+
+enum GraphBackfillPhase {
+    /// Paging through the ids: the next page's link (`None` for the first)
+    /// and what came so far, from a listing begun at `since`.
+    Listing { next: Option<String>, ids: Vec<(String, String)>, since: i64 },
+    Fetching { runs: std::collections::VecDeque<GraphRun> },
+}
+
+impl GraphBackfill {
+    fn new(path: &str, told: bool) -> GraphBackfill {
+        GraphBackfill {
+            path: path.to_string(),
+            phase: GraphBackfillPhase::Listing { next: None, ids: Vec::new(), since: crate::datefmt::now() },
+            told,
+            failures: 0,
+        }
+    }
 }
 
 /// Per-account state the Graph loop threads through its handlers.
@@ -376,9 +603,96 @@ pub(super) struct GraphState {
     roles: std::collections::BTreeMap<String, String>,
     /// The account's hidden folders (#239), left out of every listing.
     hidden: Vec<String>,
+    /// Where Graph is: [`GRAPH_BASE`], or a test's own server.
+    base: String,
+    /// The folders whose background index (#429) is still to run, the one
+    /// at the front in progress.
+    backfill: std::collections::VecDeque<GraphBackfill>,
+    /// When each folder's background index last finished, by path.
+    listed: std::collections::HashMap<String, std::time::Instant>,
+    /// When a message lookup last listed each folder's ids, by path.
+    looked_up: std::collections::HashMap<String, std::time::Instant>,
+    /// No background step before this, after one failed.
+    backfill_wait: Option<std::time::Instant>,
 }
 
 impl GraphState {
+    fn new(account: &AccountConfig) -> GraphState {
+        GraphState {
+            folders: Default::default(),
+            uids: Default::default(),
+            drafts: None,
+            inbox: None,
+            roles: account.folder_roles.clone(),
+            hidden: account.hidden_folders.clone(),
+            base: GRAPH_BASE.to_string(),
+            backfill: Default::default(),
+            listed: Default::default(),
+            looked_up: Default::default(),
+            backfill_wait: None,
+        }
+    }
+
+    /// Queue a folder's background index unless it is queued already.
+    /// `front` puts it at the head of the queue (back there, if it was
+    /// queued): the folder on screen goes before the rest of the mailbox.
+    fn queue_backfill(&mut self, path: &str, front: bool, told: bool) {
+        if let Some(i) = self.backfill.iter().position(|j| j.path == path) {
+            if front && i > 0 {
+                if let Some(job) = self.backfill.remove(i) {
+                    self.backfill.push_front(job);
+                }
+            }
+            return;
+        }
+        let job = GraphBackfill::new(path, told);
+        if front {
+            self.backfill.push_front(job);
+        } else {
+            self.backfill.push_back(job);
+        }
+    }
+
+    /// Queue every listed folder's background index, the Inbox and the
+    /// other special folders first, as the folder list orders them.
+    fn queue_all_backfills(&mut self) {
+        let mut folders: Vec<(u32, String)> =
+            self.folders.iter().map(|(path, (id, _))| (*id, path.clone())).collect();
+        folders.sort();
+        for (_, path) in folders {
+            if !self.listed.contains_key(&path)
+                && !crate::models::folder_is_hidden(&path, Some("/"), &self.hidden)
+            {
+                self.queue_backfill(&path, false, false);
+            }
+        }
+    }
+
+    /// After a folder's newest mail has been listed: whether its index is
+    /// complete now. A folder that fits in the first page is; so is one
+    /// whose background index has run, though opening it again after a
+    /// while queues another pass for mail deleted elsewhere. Otherwise its
+    /// background index is queued, first in line when `user` opened it.
+    fn index_after_load(&mut self, path: &str, complete: bool, user: bool) -> bool {
+        if complete {
+            self.backfill.retain(|j| j.path != path);
+            self.listed.insert(path.to_string(), std::time::Instant::now());
+            return true;
+        }
+        match self.listed.get(path) {
+            Some(at) => {
+                if user && at.elapsed() >= GRAPH_RELIST_AFTER {
+                    self.queue_backfill(path, true, true);
+                }
+                true
+            }
+            None => {
+                self.queue_backfill(path, user, false);
+                false
+            }
+        }
+    }
+
     /// The chip number for a folder just loaded: every draft in Drafts,
     /// unread mail elsewhere.
     fn chip_count(&self, folder_id: u32, messages: &[Message]) -> u32 {
@@ -402,6 +716,9 @@ impl GraphState {
             .iter()
             .find(|f| f.folder.kind == FolderKind::Inbox)
             .map(|f| (f.folder.id, f.folder.path.clone()));
+        // Every folder is indexed in the background, as an IMAP account's
+        // is, so search reaches the whole mailbox (#429).
+        self.queue_all_backfills();
     }
 }
 
@@ -411,6 +728,17 @@ pub(super) async fn run_graph(
     mut rx: mpsc::UnboundedReceiver<MailRequest>,
     emit: impl Fn(WorkerEvent),
 ) {
+    // A label whose name the message leaves out is named from the
+    // organization's list (#411) on its way to the reader, whether the
+    // check was just made or comes from the cache, which keeps the header's.
+    let emit = |mut ev: WorkerEvent| {
+        if let WorkerEvent::SenderChecked { check, .. } = &mut ev {
+            if let Some(label) = check.label.as_mut() {
+                crate::graph_labels::fill(&account, label);
+            }
+        }
+        emit(ev)
+    };
     let cache = Cache::open().map_err(|e| tracing::warn!("cache unavailable: {e}")).ok();
 
     emit(WorkerEvent::Account(Account {
@@ -429,14 +757,7 @@ pub(super) async fn run_graph(
 
     // When the Junk / Trash auto-empty (#140) last ran for this worker.
     let mut last_auto_empty: Option<std::time::Instant> = None;
-    let mut state = GraphState {
-        folders: Default::default(),
-        uids: Default::default(),
-        drafts: None,
-        inbox: None,
-        roles: account.folder_roles.clone(),
-        hidden: account.hidden_folders.clone(),
-    };
+    let mut state = GraphState::new(&account);
 
     // Fetch a token and the folder list. A GOA token failure here is the one
     // users actually hit (signed out in GNOME Settings), so say that.
@@ -456,7 +777,13 @@ pub(super) async fn run_graph(
     poll.tick().await; // consume the interval's immediate first tick
 
     loop {
+        // The background index (#429) only runs while nothing else is
+        // asked: a request, then the poll, come first, and each step is a
+        // single request so neither waits long behind one.
+        let indexing = !state.backfill.is_empty();
+        let wait = state.backfill_wait;
         let req = tokio::select! {
+            biased;
             req = rx.recv() => match req {
                 Some(req) => req,
                 None => break,
@@ -465,7 +792,13 @@ pub(super) async fn run_graph(
                 graph_poll_inbox(account_id, &account, cache.as_ref(), &mut state, &emit).await;
                 continue;
             }
+            _ = backfill_pause(wait), if indexing => {
+                graph_backfill_step(&account, account_id, cache.as_ref(), &mut state, &emit).await;
+                continue;
+            }
         };
+        // A folder the user opened, rather than a background refresh.
+        let user = matches!(req, MailRequest::LoadMessages { .. });
         match req {
             MailRequest::Locate { message_id } => {
                 // No folders to search here beyond what the cache already
@@ -569,23 +902,24 @@ pub(super) async fn run_graph(
                     emit(WorkerEvent::Status(String::new()));
                     continue;
                 };
-                match graph_load_folder(
+                match graph_sync_folder(
                     &token, account_id, folder_id, &path, cache.as_ref(), &mut state,
                 )
                 .await
                 {
-                    Ok(messages) => {
+                    Ok((messages, complete)) => {
                         let unread = state.chip_count(folder_id, &messages);
                         emit_graph_body_hits(&token, &account, folder_id, &path, &messages, &state, &emit)
                             .await;
                         emit(WorkerEvent::Messages { folder_id, messages });
                         emit(WorkerEvent::FolderUnread { folder_id, unread });
-                        // Graph loads the whole folder in one pass — there is no
-                        // background backfill, so the index is complete now.
-                        // Without this the list's "Loading more…" tail spinner
-                        // never clears on folders with less than a page of mail
-                        // (an emptied inbox most visibly).
-                        emit(WorkerEvent::BackfillDone { folder_id });
+                        // The index is complete when the first page held the
+                        // whole folder, or once the background index has run
+                        // (#429). Said at once when it is, so the list's
+                        // "Loading more…" tail never waits on nothing (#218).
+                        if state.index_after_load(&path, complete, user) {
+                            emit(WorkerEvent::BackfillDone { folder_id });
+                        }
                     }
                     Err(e) => {
                         emit(WorkerEvent::net_error(i18n_f("Could not fetch mail: {e}", &[("e", &(e).to_string())])));
@@ -823,9 +1157,25 @@ pub(super) async fn run_graph(
                 // No bulk endpoint for an arbitrary folder: list it, then
                 // delete each message the way a purge does.
                 let Some(token) = graph_token(&account, &emit).await else { continue };
-                match graph_load_folder(&token, account_id, folder_id, &path, cache.as_ref(), &mut state).await {
-                    Ok(messages) => {
-                        let uids: Vec<u32> = messages.iter().map(|m| m.uid).collect();
+                // Every message in it, not just the newest page or what the
+                // cache has indexed so far (#429).
+                let listed = match state.folders.get(&path).cloned() {
+                    Some((_, gid)) => {
+                        let (t, base) = (token.clone(), state.base.clone());
+                        blocking(move || graph_list_ids(&t, &base, &gid)).await
+                    }
+                    None => Err(format!("unknown folder {path}")),
+                };
+                match listed {
+                    Ok(ids) => {
+                        let uids: Vec<u32> = ids
+                            .into_iter()
+                            .map(|(id, _)| {
+                                let uid = hash_uid(&id);
+                                state.uids.insert(uid, id);
+                                uid
+                            })
+                            .collect();
                         let n = uids.len();
                         graph_purge_uids(&account, account_id, &mut state, &path, uids, cache.as_ref(), &emit).await;
                         tracing::info!("emptied {path}: {n} message(s) erased");
@@ -1096,11 +1446,10 @@ pub(super) async fn run_graph(
                         if let (Some(c), Some(sent)) = (cache.as_ref(), sent) {
                             if let Some(token) = graph_token(&account, &emit).await {
                                 if let Ok(messages) = graph_load_folder(
-                                    &token, account_id, sent.id, &sent.path, cache.as_ref(), &mut state,
+                                    &token, account_id, sent.id, &sent.path, Some(c), &mut state,
                                 )
                                 .await
                                 {
-                                    c.upsert_messages(account_id, &sent.path, &messages);
                                     emit(WorkerEvent::Messages { folder_id: sent.id, messages });
                                 }
                             }
@@ -1337,7 +1686,8 @@ async fn refresh_graph_folders(
     }
 }
 
-/// List a folder's summaries, refresh the uid map and the cache.
+/// List a folder's newest summaries, refresh the uid map and the cache, and
+/// answer with the cached folder as it now stands.
 async fn graph_load_folder(
     token: &str,
     account_id: u32,
@@ -1346,6 +1696,19 @@ async fn graph_load_folder(
     cache: Option<&Cache>,
     state: &mut GraphState,
 ) -> Result<Vec<Message>, String> {
+    graph_sync_folder(token, account_id, folder_id, path, cache, state).await.map(|(m, _)| m)
+}
+
+/// [`graph_load_folder`], saying too whether the listing was the whole
+/// folder (it fitted in [`GRAPH_FIRST_PAGE`]).
+async fn graph_sync_folder(
+    token: &str,
+    account_id: u32,
+    folder_id: u32,
+    path: &str,
+    cache: Option<&Cache>,
+    state: &mut GraphState,
+) -> Result<(Vec<Message>, bool), String> {
     // An unknown path usually means the folder list hasn't been fetched yet
     // (or the folder is new) — refresh it once before giving up.
     if !state.folders.contains_key(path) {
@@ -1363,9 +1726,9 @@ async fn graph_load_folder(
         .cloned()
         .ok_or_else(|| format!("unknown folder {path}"))?;
 
-    let t = token.to_string();
-    let listed = blocking(move || {
-        graph_list_messages(&t, &gid, account_id, folder_id)
+    let (t, base) = (token.to_string(), state.base.clone());
+    let (listed, more) = blocking(move || {
+        graph_list_messages(&t, &base, &gid, account_id, folder_id)
     }).await?;
 
     let mut messages = Vec::with_capacity(listed.len());
@@ -1373,10 +1736,156 @@ async fn graph_load_folder(
         state.uids.insert(m.uid, gid);
         messages.push(m);
     }
-    if let Some(c) = cache {
-        c.save_messages(account_id, path, &messages);
+    let Some(c) = cache else { return Ok((messages, !more)) };
+    // Merged over the cached folder rather than replacing it, which kept
+    // only the newest page (#429): the listing speaks for what it covers,
+    // the background index for the rest.
+    let cached = c.cached_uid_times(account_id, path);
+    for uid in window_gone(&cached, &messages, !more) {
+        c.delete_message(account_id, path, uid);
+        state.uids.remove(&uid);
     }
-    Ok(messages)
+    c.upsert_messages(account_id, path, &messages);
+    Ok((c.load_messages(account_id, path, folder_id), !more))
+}
+
+/// Pause the background index after a failed step, until `wait`.
+async fn backfill_pause(wait: Option<std::time::Instant>) {
+    if let Some(at) = wait {
+        tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await;
+    }
+}
+
+/// One step of the background index (#429): one request for the folder at
+/// the front of the queue, a page of its ids or a run of its missing mail.
+/// The cache gains what came, and the list hears of it as an append; the
+/// folder's index is done once its last run is in.
+///
+/// The id listing, rather than a delta query, is what tells the cache what
+/// the server no longer has: it is the listing every folder load already
+/// makes, asked for ids alone, and keeps no sync state to store, expire or
+/// recover from.
+async fn graph_backfill_step(
+    account: &AccountConfig,
+    account_id: u32,
+    cache: Option<&Cache>,
+    state: &mut GraphState,
+    emit: &impl Fn(WorkerEvent),
+) {
+    let quiet = |_: WorkerEvent| {};
+    let ok = match graph_token(account, &quiet).await {
+        Some(token) => graph_backfill_with(&token, account_id, cache, state, emit).await,
+        None => false,
+    };
+    if ok {
+        state.backfill_wait = None;
+        return;
+    }
+    state.backfill_wait = Some(std::time::Instant::now() + GRAPH_BACKFILL_BACKOFF);
+    if let Some(job) = state.backfill.front_mut() {
+        job.failures += 1;
+        // Offline, or refused: after a few tries the list stops promising
+        // more (#218), and the index carries on when it can.
+        if job.failures >= 3 && !job.told {
+            job.told = true;
+            if let Some((folder_id, _)) = state.folders.get(&job.path) {
+                emit(WorkerEvent::BackfillDone { folder_id: *folder_id });
+            }
+        }
+    }
+}
+
+/// [`graph_backfill_step`] with its token; false when the request failed,
+/// the job then still at the front of the queue to try again.
+async fn graph_backfill_with(
+    token: &str,
+    account_id: u32,
+    cache: Option<&Cache>,
+    state: &mut GraphState,
+    emit: &impl Fn(WorkerEvent),
+) -> bool {
+    let Some(mut job) = state.backfill.pop_front() else { return true };
+    // A folder gone or hidden since it was queued has nothing left to index.
+    let Some((folder_id, gid)) = state.folders.get(&job.path).cloned() else { return true };
+    let base = state.base.clone();
+    match &mut job.phase {
+        GraphBackfillPhase::Listing { next, ids, since } => {
+            let url = next.clone().unwrap_or_else(|| graph_ids_url(&base, &gid));
+            let t = token.to_string();
+            let (page, more) = match blocking(move || graph_id_page(&t, &url)).await {
+                Ok(page) => page,
+                Err(e) => {
+                    tracing::warn!("[account {account_id}] index of {}: {e}", job.path);
+                    state.backfill.push_front(job);
+                    return false;
+                }
+            };
+            ids.extend(page);
+            if more.is_some() {
+                *next = more;
+                job.failures = 0;
+                state.backfill.push_front(job);
+                return true;
+            }
+            for (id, _) in ids.iter() {
+                state.uids.insert(hash_uid(id), id.clone());
+            }
+            let cached = cache.map(|c| c.cached_uid_times(account_id, &job.path)).unwrap_or_default();
+            let (gone, runs) = graph_index_plan(ids, &cached, *since);
+            tracing::info!(
+                "[account {account_id}] index of {}: {} on the server, {} to fetch in {} run(s), {} gone",
+                job.path,
+                ids.len(),
+                runs.iter().map(|r| r.ids.len()).sum::<usize>(),
+                runs.len(),
+                gone.len()
+            );
+            if let (Some(c), false) = (cache, gone.is_empty()) {
+                for uid in &gone {
+                    c.delete_message(account_id, &job.path, *uid);
+                }
+                // The list still shows what went; this is the folder as it is.
+                emit(WorkerEvent::Messages { folder_id, messages: c.load_messages(account_id, &job.path, folder_id) });
+            }
+            job.failures = 0;
+            job.phase = GraphBackfillPhase::Fetching { runs: runs.into() };
+        }
+        GraphBackfillPhase::Fetching { runs } => {
+            let Some(run) = runs.front().cloned() else { return true };
+            let t = token.to_string();
+            let fetched = blocking(move || graph_fetch_run(&t, &base, &gid, &run, account_id, folder_id)).await;
+            let fetched = match fetched {
+                Ok(fetched) => fetched,
+                Err(e) => {
+                    tracing::warn!("[account {account_id}] index of {}: {e}", job.path);
+                    state.backfill.push_front(job);
+                    return false;
+                }
+            };
+            runs.pop_front();
+            job.failures = 0;
+            let mut messages = Vec::with_capacity(fetched.len());
+            for (m, id) in fetched {
+                state.uids.insert(m.uid, id);
+                messages.push(m);
+            }
+            if !messages.is_empty() {
+                if let Some(c) = cache {
+                    c.upsert_messages(account_id, &job.path, &messages);
+                }
+                emit(WorkerEvent::MessagesAppend { folder_id, messages });
+            }
+        }
+    }
+    if matches!(&job.phase, GraphBackfillPhase::Fetching { runs } if runs.is_empty()) {
+        state.listed.insert(job.path.clone(), std::time::Instant::now());
+        if !job.told {
+            emit(WorkerEvent::BackfillDone { folder_id });
+        }
+    } else {
+        state.backfill.push_front(job);
+    }
+    true
 }
 
 /// Delete the draft a message was opened from, on the server and in the
@@ -1417,6 +1926,23 @@ async fn graph_resolve(
     // Not indexed yet: list the folder (fills the uid map) and try again. The
     // account/folder ids only label the discarded summaries, so zeros are fine.
     let _ = graph_load_folder(&token, 0, 0, path, None, state).await;
+    if let Some(gid) = state.uids.get(&uid) {
+        return Some((token, gid.clone()));
+    }
+    // Older than the first page (#429), from an earlier session's index:
+    // the folder's id listing names every message in it, once a while.
+    let recent = |at: Option<&std::time::Instant>| at.is_some_and(|at| at.elapsed() < GRAPH_RELIST_AFTER);
+    if !recent(state.listed.get(path)) && !recent(state.looked_up.get(path)) {
+        if let Some((_, folder_gid)) = state.folders.get(path).cloned() {
+            let (t, base) = (token.clone(), state.base.clone());
+            if let Ok(ids) = blocking(move || graph_list_ids(&t, &base, &folder_gid)).await {
+                for (id, _) in ids {
+                    state.uids.insert(hash_uid(&id), id);
+                }
+                state.looked_up.insert(path.to_string(), std::time::Instant::now());
+            }
+        }
+    }
     state.uids.get(&uid).map(|gid| (token, gid.clone()))
 }
 
@@ -1541,16 +2067,35 @@ async fn graph_undo_move(
     let wanted: std::collections::HashSet<&str> =
         message_ids.iter().map(|s| s.as_str()).collect();
 
-    let t = token.clone();
-    let listed = blocking(move || {
-        graph_list_messages(&t, &gid, account_id, folder_id)
+    let (t, base, folder_gid) = (token.clone(), state.base.clone(), gid.clone());
+    let (listed, _) = blocking(move || {
+        graph_list_messages(&t, &base, &folder_gid, account_id, folder_id)
     }).await?;
 
     let mut uids = Vec::new();
+    let mut found: std::collections::HashSet<String> = Default::default();
     for (m, mgid) in listed {
         if wanted.contains(m.message_id.as_str()) {
             state.uids.insert(m.uid, mgid);
             uids.push(m.uid);
+            found.insert(m.message_id);
+        }
+    }
+    // A message keeps its arrival date when it moves, so an old one lands
+    // below the newest page (#429): those are asked for by Message-ID.
+    for mid in wanted.iter().filter(|mid| !found.contains(**mid)) {
+        let exact = cache.map(|c| c.exact_msgids(mid)).unwrap_or_else(|| mid.to_string());
+        let (t, base, folder_gid) = (token.clone(), state.base.clone(), gid.clone());
+        match blocking(move || graph_find_by_msgid(&t, &base, &folder_gid, &exact)).await {
+            Ok(hits) => {
+                for (m, mgid) in hits {
+                    if !uids.contains(&m.uid) {
+                        state.uids.insert(m.uid, mgid);
+                        uids.push(m.uid);
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("undo: could not look up <{mid}> in {path}: {e}"),
         }
     }
     if uids.is_empty() {
@@ -1692,7 +2237,7 @@ async fn auto_empty_graph(
             graph_before_date(days)
         );
         let t = token.to_string();
-        let items = blocking(move || graph_paged(&t, &url, GRAPH_INDEX_CAP)).await;
+        let items = blocking(move || graph_paged(&t, &url, GRAPH_FIRST_PAGE)).await;
         let ids: Vec<String> = match items {
             Ok(items) => items.iter().filter_map(|v| v["id"].as_str().map(str::to_string)).collect(),
             Err(e) => {
@@ -1780,6 +2325,329 @@ async fn emit_graph_body_hits(
 #[cfg(test)]
 mod tests {
     use super::graph_due;
+
+    use super::*;
+
+    /// A Graph message summary as `/messages` lists it.
+    fn graph_msg(id: &str, at: &str) -> serde_json::Value {
+        serde_json::json!({
+            "@odata.etag": "W/\"CQAAABYAAAD\"",
+            "id": id,
+            "receivedDateTime": at,
+            "subject": format!("Subject {id}"),
+            "bodyPreview": "Hello there",
+            "isRead": true,
+            "hasAttachments": false,
+            "internetMessageId": format!("<{id}@example.com>"),
+            "conversationId": format!("AAQk-{id}"),
+            "importance": "normal",
+            "categories": [],
+            "flag": { "flagStatus": "notFlagged" },
+            "from": { "emailAddress": { "name": "Ada", "address": "ada@example.com" } },
+            "toRecipients": [{ "emailAddress": { "name": "Me", "address": "me@example.com" } }],
+            "ccRecipients": [],
+            "replyTo": [],
+        })
+    }
+
+    /// The same message as an id-only listing names it.
+    fn graph_id(id: &str, at: &str) -> serde_json::Value {
+        serde_json::json!({ "@odata.etag": "W/\"CQAAABYAAAD\"", "id": id, "receivedDateTime": at })
+    }
+
+    fn day(d: u32) -> String {
+        format!("2026-09-{d:02}T09:00:00Z")
+    }
+
+    /// A cached row for `id`, received at `ts`.
+    fn row(id: &str, ts: i64, folder_id: u32) -> Message {
+        let v = graph_msg(id, "2026-09-01T09:00:00Z");
+        let (mut m, _) = graph_message(&v, 1, folder_id).expect("summary");
+        m.timestamp = ts;
+        m
+    }
+
+    fn ts(at: &str) -> i64 {
+        chrono::DateTime::parse_from_rfc3339(at).unwrap().timestamp()
+    }
+
+    /// One answer of the loopback server: the first unused one whose `key`
+    /// is part of the request's path and query.
+    struct Answer {
+        key: String,
+        status: u16,
+        headers: &'static str,
+        body: String,
+    }
+
+    fn answer(key: &str, status: u16, body: serde_json::Value) -> Answer {
+        Answer { key: key.to_string(), status, headers: "", body: body.to_string() }
+    }
+
+    /// An HTTP server on loopback for `answers.len()` requests, as in the
+    /// JMAP tests; hands back the request targets it was sent. Each body is
+    /// formatted with `{origin}` replaced, for the next-page links.
+    fn serve(answers: Vec<Answer>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let origin = format!("http://{}", listener.local_addr().expect("addr"));
+        let o = origin.clone();
+        let handle = std::thread::spawn(move || {
+            let mut answers: Vec<Option<Answer>> = answers.into_iter().map(Some).collect();
+            let mut seen = Vec::new();
+            for _ in 0..answers.len() {
+                let Ok((stream, _)) = listener.accept() else { break };
+                let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("request line");
+                let target = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                        break;
+                    }
+                }
+                let hit = answers
+                    .iter_mut()
+                    .find(|a| a.as_ref().is_some_and(|a| target.contains(&a.key)))
+                    .and_then(Option::take);
+                let (status, headers, body) = match hit {
+                    Some(a) => (a.status, a.headers, a.body.replace("{origin}", &o)),
+                    None => (404, "", String::new()),
+                };
+                let mut out = stream;
+                let _ = write!(
+                    out,
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                seen.push(target);
+            }
+            seen
+        });
+        (origin, handle)
+    }
+
+    fn state_for(origin: &str, path: &str, folder_id: u32, gid: &str) -> GraphState {
+        let mut state = GraphState::new(&super::super::sample_account());
+        state.base = origin.to_string();
+        state.folders.insert(path.to_string(), (folder_id, gid.to_string()));
+        state
+    }
+
+    /// #429: missing mail comes in runs, newest first, none longer than a
+    /// chunk; a cached row the server has not got is gone, unless it is
+    /// newer than the listing.
+    #[test]
+    fn the_index_plan_fetches_runs_and_drops_what_went() {
+        let server: Vec<(String, String)> =
+            (1..=8).map(|i| (format!("M{i}"), day(9 - i))).collect();
+        let since = ts("2026-09-10T00:00:00Z");
+        let cached: std::collections::HashMap<u32, i64> = [
+            (hash_uid("M1"), ts(&day(8))),
+            (hash_uid("M2"), ts(&day(7))),
+            (hash_uid("M5"), ts(&day(4))),
+            (hash_uid("GONE"), ts("2026-01-01T00:00:00Z")),
+            (hash_uid("NEW"), since + 60),
+        ]
+        .into_iter()
+        .collect();
+        let (gone, runs) = graph_index_plan(&server, &cached, since);
+        assert_eq!(gone, vec![hash_uid("GONE")]);
+        assert_eq!(
+            runs,
+            vec![
+                GraphRun { ids: vec!["M3".into(), "M4".into()], newest: day(6), oldest: day(5) },
+                GraphRun { ids: vec!["M6".into(), "M7".into(), "M8".into()], newest: day(3), oldest: day(1) },
+            ]
+        );
+
+        // A long run is cut into chunks.
+        let many: Vec<(String, String)> =
+            (0..GRAPH_BACKFILL_CHUNK + 5).map(|i| (format!("X{i}"), day(1))).collect();
+        let (_, runs) = graph_index_plan(&many, &Default::default(), since);
+        assert_eq!(runs.iter().map(|r| r.ids.len()).collect::<Vec<_>>(), vec![GRAPH_BACKFILL_CHUNK, 5]);
+    }
+
+    /// #429: a listing of the newest page speaks only for the mail it
+    /// covers; a complete one for the whole folder.
+    #[test]
+    fn a_window_listing_keeps_older_rows() {
+        let listed = vec![row("A", 300, 1), row("B", 200, 1)];
+        let cached: std::collections::HashMap<u32, i64> =
+            [(hash_uid("A"), 300), (hash_uid("B"), 200), (hash_uid("DEL"), 250), (hash_uid("OLD"), 100)]
+                .into_iter()
+                .collect();
+        assert_eq!(window_gone(&cached, &listed, false), vec![hash_uid("DEL")]);
+        let mut all = vec![hash_uid("DEL"), hash_uid("OLD")];
+        all.sort_unstable();
+        assert_eq!(window_gone(&cached, &listed, true), all);
+        assert!(window_gone(&cached, &[], false).is_empty());
+    }
+
+    /// #429: a throttled request waits as asked and goes again.
+    #[test]
+    fn a_throttled_request_is_retried() {
+        let (origin, server) = serve(vec![
+            Answer {
+                key: "/messages".into(),
+                status: 429,
+                headers: "Retry-After: 0\r\n",
+                body: serde_json::json!({ "error": { "code": "ApplicationThrottled", "message": "slow down" } })
+                    .to_string(),
+            },
+            answer("/messages", 200, serde_json::json!({ "value": [graph_id("M1", &day(1))] })),
+        ]);
+        let (ids, next) = graph_id_page("t", &graph_ids_url(&origin, "F")).expect("retried");
+        assert_eq!(ids, vec![("M1".to_string(), day(1))]);
+        assert_eq!(next, None);
+        assert_eq!(server.join().expect("server").len(), 2);
+    }
+
+    /// #429: the whole background pass over a folder, against recorded
+    /// answers: the ids in two pages, a short run fetched message by
+    /// message (one gone meanwhile), a long one by its dates; the cache
+    /// keeps what it had, loses what the server lost, and the list hears
+    /// of each step and of the end.
+    #[tokio::test]
+    async fn the_background_index_fills_and_prunes_a_folder() {
+        let page1: Vec<serde_json::Value> = (1..=4).map(|i| graph_id(&format!("M{i}"), &day(9 - i))).collect();
+        let page2: Vec<serde_json::Value> = (5..=8).map(|i| graph_id(&format!("M{i}"), &day(9 - i))).collect();
+        let ranged: Vec<serde_json::Value> = (5..=8).map(|i| graph_msg(&format!("M{i}"), &day(9 - i))).collect();
+        let (origin, server) = serve(vec![
+            answer(
+                "$top=1000&$orderby=receivedDateTime%20desc&$select=id,receivedDateTime",
+                200,
+                serde_json::json!({
+                    "value": page1,
+                    "@odata.nextLink": "{origin}/me/mailFolders/F-archive/messages?$select=id,receivedDateTime&$skip=4",
+                }),
+            ),
+            answer("$skip=4", 200, serde_json::json!({ "value": page2 })),
+            answer("/me/messages/M3?", 200, graph_msg("M3", &day(6))),
+            answer(
+                "/me/messages/M4?",
+                404,
+                serde_json::json!({ "error": { "code": "ErrorItemNotFound", "message": "Not found." } }),
+            ),
+            answer("$filter=receivedDateTime%20ge%20", 200, serde_json::json!({ "value": ranged })),
+        ]);
+        let cache = Cache::in_memory().expect("cache");
+        let now = crate::datefmt::now();
+        cache.upsert_messages(
+            1,
+            "Archive",
+            &[
+                row("M1", ts(&day(8)), 4),
+                row("M2", ts(&day(7)), 4),
+                row("M5", ts(&day(4)), 4),
+                row("GONE", ts("2026-01-01T00:00:00Z"), 4),
+                row("NEW", now + 60, 4),
+            ],
+        );
+        let mut state = state_for(&origin, "Archive", 4, "F-archive");
+        state.queue_backfill("Archive", true, false);
+        let events = std::cell::RefCell::new(Vec::new());
+        let emit = |e: WorkerEvent| events.borrow_mut().push(e);
+        for _ in 0..4 {
+            assert!(graph_backfill_with("t", 1, Some(&cache), &mut state, &emit).await);
+        }
+        assert!(state.backfill.is_empty(), "the folder's index is done");
+
+        let mut have: Vec<u32> = cache.cached_uids(1, "Archive").into_iter().collect();
+        have.sort_unstable();
+        let mut want: Vec<u32> = ["M1", "M2", "M3", "M5", "M6", "M7", "M8", "NEW"].iter().map(|id| hash_uid(id)).collect();
+        want.sort_unstable();
+        assert_eq!(have, want);
+        assert_eq!(state.uids.get(&hash_uid("M7")).map(String::as_str), Some("M7"));
+
+        let events = events.into_inner();
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|e| match e {
+                WorkerEvent::Messages { folder_id: 4, .. } => "messages",
+                WorkerEvent::MessagesAppend { folder_id: 4, .. } => "append",
+                WorkerEvent::BackfillDone { folder_id: 4 } => "done",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["messages", "append", "append", "done"]);
+
+        let seen = server.join().expect("server");
+        assert_eq!(seen.len(), 5);
+        assert!(
+            seen[4].contains("ge%202026-09-01T09%3A00%3A00Z%20and%20receivedDateTime%20le%202026-09-03T09%3A00%3A00Z"),
+            "{}",
+            seen[4]
+        );
+    }
+
+    /// #429: re-listing the newest page leaves the older cached mail be,
+    /// and says the folder holds more than the page.
+    #[tokio::test]
+    async fn a_folder_load_merges_over_the_cache() {
+        let page = |from: usize| -> Vec<serde_json::Value> {
+            (from..from + 100)
+                .map(|i| graph_msg(&format!("N{i}"), &format!("2026-10-01T{:02}:{:02}:00Z", 23 - i / 60, 59 - i % 60)))
+                .collect()
+        };
+        let (origin, server) = serve(vec![
+            answer(
+                "$top=100&$orderby",
+                200,
+                serde_json::json!({ "value": page(0), "@odata.nextLink": "{origin}/me/mailFolders/F-inbox/messages?$skip=100" }),
+            ),
+            answer(
+                "$skip=100",
+                200,
+                serde_json::json!({ "value": page(100), "@odata.nextLink": "{origin}/me/mailFolders/F-inbox/messages?$skip=200" }),
+            ),
+            answer(
+                "$skip=200",
+                200,
+                serde_json::json!({ "value": page(200), "@odata.nextLink": "{origin}/me/mailFolders/F-inbox/messages?$skip=300" }),
+            ),
+        ]);
+        let cache = Cache::in_memory().expect("cache");
+        // An old message from the background index, and a new one deleted
+        // on the server since it was cached.
+        cache.upsert_messages(
+            1,
+            "Inbox",
+            &[row("OLD", ts("2025-01-01T00:00:00Z"), 1), row("DELETED", ts("2026-10-01T23:59:30Z"), 1)],
+        );
+        let mut state = state_for(&origin, "Inbox", 1, "F-inbox");
+        let (messages, complete) =
+            graph_sync_folder("t", 1, 1, "Inbox", Some(&cache), &mut state).await.expect("listed");
+        assert!(!complete, "the server has more than the first page");
+        assert_eq!(messages.len(), GRAPH_FIRST_PAGE + 1);
+        assert!(messages.iter().any(|m| m.uid == hash_uid("OLD")));
+        assert!(!messages.iter().any(|m| m.uid == hash_uid("DELETED")));
+        assert_eq!(server.join().expect("server").len(), 3);
+
+        // Not complete and never indexed: queued, first, for the folder on
+        // screen; the list keeps its "Loading more…".
+        assert!(!state.index_after_load("Inbox", complete, true));
+        assert_eq!(state.backfill.front().map(|j| j.path.as_str()), Some("Inbox"));
+        // A folder that fitted in one page is complete as listed.
+        assert!(state.index_after_load("Inbox", true, true));
+        assert!(state.backfill.is_empty());
+    }
+
+    /// #429: an undone move finds an old message by its Message-ID.
+    #[test]
+    fn a_message_is_found_by_its_message_id() {
+        let (origin, server) = serve(vec![answer(
+            "$filter=internetMessageId",
+            200,
+            serde_json::json!({ "value": [graph_msg("M9", &day(1))] }),
+        )]);
+        let hits = graph_find_by_msgid("t", &origin, "F-trash", "M9@Example.com").expect("found");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1, "M9");
+        let seen = server.join().expect("server");
+        assert!(seen[0].contains("$filter=internetMessageId%20eq%20%27%3CM9%40Example.com%3E%27"), "{}", seen[0]);
+    }
 
     /// #334: a flagged message's due date, in UTC; none once the flag is
     /// complete or cleared, or without a date.

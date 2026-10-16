@@ -27,7 +27,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DST="$ROOT/resources/icons/scalable/actions"
+APPS_DST="$ROOT/resources/icons/scalable/apps"
 CUSTOM="$ROOT/data/icons/hicolor/symbolic/actions"   # Hylki's own SVGs
+APPS="$ROOT/data/icons/hicolor/scalable/apps"         # the app's own icon
 ADWAITA="/usr/share/icons/Adwaita"
 ADW_LIB="$(ldconfig -p | grep -om1 '/[^ ]*libadwaita[^ ]*\.so[^ ]*' || true)"
 GTK_LIB="$(ldconfig -p | grep -om1 '/[^ ]*libgtk-4\.so[^ ]*' || true)"
@@ -88,6 +90,13 @@ for n in "${toolkit[@]}"; do
     [ -f "$DST/$n.svg" ] || fetch "$n" || true
 done
 
+# The app's own icon too: the window and About find it by name, and with
+# the icon folders on disk left out of the search (register_icons), only
+# the bundle can answer.
+rm -rf "$APPS_DST"
+mkdir -p "$APPS_DST"
+cp "$APPS"/*.svg "$APPS_DST"/
+
 if [ ${#missing[@]} -gt 0 ]; then
     echo "!! Could not source: ${missing[*]}" >&2
     echo "   Add an SVG to $CUSTOM/ and re-run." >&2
@@ -105,6 +114,9 @@ fi
     echo '  <gresource prefix="/co/hyprlab/Hylki">'
     for f in $(cd "$DST" && ls *.svg | sort); do
         echo "    <file>icons/scalable/actions/$f</file>"
+    done
+    for f in $(cd "$APPS_DST" && ls *.svg | sort); do
+        echo "    <file>icons/scalable/apps/$f</file>"
     done
     echo '  </gresource>'
     echo '</gresources>'

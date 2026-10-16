@@ -15,6 +15,14 @@ use crate::contacts::{ContactDetails, ContactEdit, Labeled};
 use crate::ui::context_menu::{show_context_menu, MenuEntry};
 use crate::i18n::{i18n, i18n_f, i18n_noop};
 
+/// Where the people found in the LDAP directories (#307) start in the
+/// index space `selected` and `row_map` share with `contacts`: an index this
+/// high or higher is `directory_hits[index - DIRECTORY]`.
+const DIRECTORY: usize = usize::MAX / 2;
+
+/// At most this many directory entries are listed for one search.
+const DIRECTORY_LIMIT: usize = 50;
+
 /// How the contact list is ordered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContactSort {
@@ -67,6 +75,20 @@ pub struct ContactsPage {
     filter_books: Vec<(String, String)>,
     /// Set while the filter's model is replaced, which fires its notify.
     filter_guard: std::cell::Cell<bool>,
+    /// The people the LDAP directories hold for the search (#307), listed
+    /// after the contacts under their own heading. Read-only: they can be
+    /// written to and added to Contacts, not edited.
+    directory_hits: Vec<ContactDetails>,
+    /// Bumped at every change to the search, so an answer to an older one
+    /// is dropped.
+    directory_generation: u64,
+    /// The directories switched on, as (UID, name): the list shows, with
+    /// its search box, even with no contacts of its own, and the book
+    /// filter offers each after the address books.
+    directories: Vec<(String, String)>,
+    /// The directories that did not answer the search, listed under the
+    /// people found, so a search that finds nobody says why (#307).
+    directory_failures: Vec<crate::directory::DirectoryFailure>,
 }
 
 #[derive(Debug)]
@@ -102,6 +124,17 @@ pub enum ContactsPageInput {
     SetBooks(Vec<crate::contacts::Book>),
     /// The book filter above the list: 0 is every book.
     FilterBook(u32),
+    /// The LDAP directories switched on, as (UID, name).
+    DirectoriesKnown(Vec<(String, String)>),
+    /// The search paused: ask the directories, unless it changed since.
+    DirectoryLookup { generation: u64, query: String },
+    DirectoryResults { generation: u64, hits: Vec<ContactDetails>, failed: Vec<crate::directory::DirectoryFailure> },
+    /// Copy a directory entry into the default address book.
+    AddDirectoryHit(usize),
+    /// Put this in the search box, as if typed.
+    SetSearch(String),
+    /// Pick this entry of the book filter, as if chosen.
+    PickBook(u32),
 }
 
 #[derive(Debug)]
@@ -404,6 +437,10 @@ impl Component for ContactsPage {
             book_filter: None,
             filter_books: Vec::new(),
             filter_guard: std::cell::Cell::new(false),
+            directory_hits: Vec::new(),
+            directory_generation: 0,
+            directories: Vec::new(),
+            directory_failures: Vec::new(),
         };
         let widgets = view_output!();
         widgets.detail_overlay.add_overlay(&compose_slot);
@@ -460,6 +497,25 @@ impl Component for ContactsPage {
             widgets.sort_btn.set_popover(Some(&pop));
         }
 
+        // The directory entries sit under a heading of their own, so nobody
+        // takes them for contacts.
+        widgets.list.set_header_func(|row, before| {
+            let first = row.has_css_class("directory-hit")
+                && !before.is_some_and(|b| b.has_css_class("directory-hit"));
+            if !first {
+                row.set_header(None::<&gtk::Widget>);
+                return;
+            }
+            let heading = gtk::Label::new(Some(&i18n("In Directories")));
+            heading.add_css_class("heading");
+            heading.add_css_class("dim-label");
+            heading.set_xalign(0.0);
+            heading.set_margin_top(12);
+            heading.set_margin_bottom(4);
+            heading.set_margin_start(12);
+            row.set_header(Some(&heading));
+        });
+
         ComponentParts { model, widgets }
     }
 
@@ -473,9 +529,13 @@ impl Component for ContactsPage {
         match message {
             ContactsPageInput::SetLoading => {
                 self.loading = true;
-                if self.contacts.is_empty() {
+                if self.contacts.is_empty() && self.directories.is_empty() {
                     widgets.page_stack.set_visible_child_name("none");
                 }
+                let s = sender.input_sender().clone();
+                std::thread::spawn(move || {
+                    let _ = s.send(ContactsPageInput::DirectoriesKnown(crate::directory::enabled_names()));
+                });
             }
 
             ContactsPageInput::SetContacts(mut contacts) => {
@@ -486,6 +546,7 @@ impl Component for ContactsPage {
                 self.deleted.retain(|key| incoming.contains(key));
                 contacts.retain(|c| !self.deleted.contains(&(c.book_uid.clone(), c.eds_uid.clone())));
                 // Keep the same person selected across a refresh, by identity.
+                let on_hit = self.selected.filter(|&i| i >= DIRECTORY);
                 let keep = self
                     .selected
                     .and_then(|i| self.contacts.get(i))
@@ -494,18 +555,124 @@ impl Component for ContactsPage {
                 self.loading = false;
                 self.editor = None;
                 self.editing_target = None;
-                self.selected = keep.and_then(|(name, email)| {
-                    self.contacts.iter().position(|c| {
-                        c.name == name && c.primary_email().map(str::to_string) == email
+                self.selected = keep
+                    .and_then(|(name, email)| {
+                        self.contacts.iter().position(|c| {
+                            c.name == name && c.primary_email().map(str::to_string) == email
+                        })
                     })
-                });
+                    .or(on_hit);
+                // One just added from a directory is a contact now.
+                self.drop_known_hits();
+                if self.selected.is_some_and(|i| self.entry(i).is_none()) {
+                    self.selected = None;
+                }
                 self.refresh_book_filter(widgets);
                 self.rebuild(widgets, &sender);
             }
 
             ContactsPageInput::Query(q) => {
                 self.query = q.to_lowercase();
+                self.directory_generation = self.directory_generation.wrapping_add(1);
+                let typed = q.trim().to_string();
+                if typed.chars().count() < crate::directory::MIN_QUERY {
+                    self.directory_hits.clear();
+                    self.directory_failures.clear();
+                } else {
+                    // What the directories found before narrows with the
+                    // search until they answer this one.
+                    let query = self.query.clone();
+                    self.directory_hits.retain(|c| matches_query(c, query.trim()));
+                    // Asked once the typing pauses, not per key.
+                    let generation = self.directory_generation;
+                    let s = sender.input_sender().clone();
+                    gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+                        let _ = s.send(ContactsPageInput::DirectoryLookup { generation, query: typed });
+                    });
+                }
+                if self.selected.is_some_and(|i| self.entry(i).is_none()) {
+                    self.selected = None;
+                }
                 self.rebuild(widgets, &sender);
+            }
+
+            ContactsPageInput::SetSearch(text) => {
+                widgets.search.set_text(&text);
+            }
+
+            ContactsPageInput::PickBook(n) => {
+                widgets.book_filter.set_selected(n);
+            }
+
+            ContactsPageInput::DirectoriesKnown(directories) => {
+                if directories == self.directories {
+                    return;
+                }
+                self.directories = directories;
+                self.refresh_book_filter(widgets);
+                if !self.directories.is_empty() && self.contacts.is_empty() && !self.loading {
+                    widgets.page_stack.set_visible_child_name("browser");
+                }
+            }
+
+            ContactsPageInput::DirectoryLookup { generation, query } => {
+                if generation != self.directory_generation {
+                    return;
+                }
+                let s = sender.input_sender().clone();
+                std::thread::spawn(move || {
+                    let (hits, failed) = crate::directory::search_contacts(&query, DIRECTORY_LIMIT);
+                    let _ = s.send(ContactsPageInput::DirectoryResults { generation, hits, failed });
+                });
+            }
+
+            ContactsPageInput::DirectoryResults { generation, hits, failed } => {
+                if generation != self.directory_generation {
+                    return;
+                }
+                self.directory_failures = failed;
+                // The entry shown may be at another place in the new list.
+                let shown = self
+                    .selected
+                    .filter(|&i| i >= DIRECTORY)
+                    .and_then(|i| self.entry(i))
+                    .map(|c| (c.name.clone(), c.primary_email().map(str::to_string)));
+                self.directory_hits = hits;
+                self.drop_known_hits();
+                if let Some((name, email)) = shown {
+                    self.selected = self
+                        .directory_hits
+                        .iter()
+                        .position(|c| c.name == name && c.primary_email().map(str::to_string) == email)
+                        .map(|i| DIRECTORY + i);
+                }
+                // An open editor stays as it is; the list catches up with
+                // the next change.
+                if self.editor.is_none() {
+                    self.rebuild(widgets, &sender);
+                }
+            }
+
+            ContactsPageInput::AddDirectoryHit(idx) => {
+                let Some(c) = idx.checked_sub(DIRECTORY).and_then(|i| self.directory_hits.get(i)) else {
+                    return;
+                };
+                // A card of its own, not the directory's, whose UID is the
+                // directory's name for the entry.
+                let edit = ContactEdit {
+                    name: c.name.clone(),
+                    nickname: c.nickname.clone(),
+                    org: c.org.clone(),
+                    title: c.title.clone(),
+                    note: c.note.clone(),
+                    emails: c.emails.clone(),
+                    phones: c.phones.clone(),
+                    urls: c.urls.clone(),
+                };
+                let _ = sender.output(ContactsPageOutput::CreateContact {
+                    book_uid: None,
+                    vcard: crate::contacts::new_vcard(&edit),
+                });
             }
 
             ContactsPageInput::SetSort(sort) => {
@@ -538,7 +705,7 @@ impl Component for ContactsPage {
             }
 
             ContactsPageInput::Edit => {
-                if self.selected.is_some() {
+                if self.selected.is_some_and(|i| i < DIRECTORY) {
                     self.editing_target = self.selected;
                     self.render_editor(widgets, &sender);
                 }
@@ -570,7 +737,7 @@ impl Component for ContactsPage {
             ContactsPageInput::CancelEdit => {
                 self.editor = None;
                 self.editing_target = None;
-                if self.contacts.is_empty() {
+                if self.contacts.is_empty() && self.directories.is_empty() {
                     widgets.page_stack.set_visible_child_name("none");
                 }
                 self.render_detail(widgets, &sender);
@@ -712,15 +879,24 @@ impl ContactsPage {
         if self.book_filter.as_ref().is_some_and(|b| *b != c.book_uid) {
             return false;
         }
-        if self.query.is_empty() {
-            return true;
+        matches_query(c, &self.query)
+    }
+
+    /// The entry at `idx`, a directory entry's index included.
+    fn entry(&self, idx: usize) -> Option<&ContactDetails> {
+        match idx.checked_sub(DIRECTORY) {
+            Some(i) => self.directory_hits.get(i),
+            None => self.contacts.get(idx),
         }
-        let q = self.query.as_str();
-        c.name.to_lowercase().contains(q)
-            || c.nickname.to_lowercase().contains(q)
-            || c.org.to_lowercase().contains(q)
-            || c.emails.iter().any(|e| e.value.to_lowercase().contains(q))
-            || c.phones.iter().any(|p| p.value.to_lowercase().contains(q))
+    }
+
+    /// Someone already in Contacts is not listed again. One found in two
+    /// directories stays in both, for when one of them is picked; the list
+    /// of every book shows the first only.
+    fn drop_known_hits(&mut self) {
+        let known: std::collections::HashSet<String> =
+            self.contacts.iter().flat_map(|c| c.emails.iter().map(|e| e.value.to_lowercase())).collect();
+        self.directory_hits.retain(|c| !c.emails.iter().any(|e| known.contains(&e.value.to_lowercase())));
     }
 
     /// Fill the book filter from the books known: the writable ones (the
@@ -732,6 +908,12 @@ impl ContactsPage {
         for c in &self.contacts {
             if !c.book_uid.is_empty() && !books.iter().any(|(uid, _)| *uid == c.book_uid) {
                 books.push((c.book_uid.clone(), c.book_name.clone()));
+            }
+        }
+        // A directory lists the people a search finds in it (#307).
+        for (uid, name) in &self.directories {
+            if !books.iter().any(|(u, _)| u == uid) {
+                books.push((uid.clone(), format!("LDAP — {name}")));
             }
         }
         if books == self.filter_books {
@@ -768,9 +950,8 @@ impl ContactsPage {
     /// Rebuild the list from `contacts` + `query` + `sort`, keep (or default)
     /// the selection, and render its detail card.
     fn rebuild(&mut self, widgets: &ContactsPageWidgets, sender: &ComponentSender<Self>) {
-        widgets
-            .page_stack
-            .set_visible_child_name(if self.contacts.is_empty() { "none" } else { "browser" });
+        let empty = self.contacts.is_empty() && self.directories.is_empty();
+        widgets.page_stack.set_visible_child_name(if empty { "none" } else { "browser" });
 
         while let Some(child) = widgets.list.first_child() {
             widgets.list.remove(&child);
@@ -854,6 +1035,104 @@ impl ContactsPage {
             widgets.list.append(&row);
         }
 
+        // The directories' answers, after the contacts and by name whatever
+        // the sort. The book filter keeps those of the directory it names.
+        let in_filter = |uid: &str| self.book_filter.as_deref().is_none_or(|b| b == uid);
+        let mut listed = std::collections::HashSet::new();
+        for (i, c) in self.directory_hits.iter().enumerate() {
+            if !in_filter(&c.book_uid) {
+                continue;
+            }
+            let emails: Vec<String> = c.emails.iter().map(|e| e.value.to_lowercase()).collect();
+            if emails.iter().any(|e| listed.contains(e)) {
+                continue;
+            }
+            listed.extend(emails);
+            let idx = DIRECTORY + i;
+            self.row_map.push(idx);
+            let row = adw::ActionRow::new();
+            row.add_css_class("directory-hit");
+            row.set_title(&gtk::glib::markup_escape_text(&c.name));
+            // Which directory it is in, after the address.
+            let sub = match c.primary_email() {
+                Some(email) => format!("{email} · {}", c.book_name),
+                None => c.book_name.clone(),
+            };
+            row.set_subtitle(&gtk::glib::markup_escape_text(&sub));
+            row.set_activatable(true);
+            row.add_prefix(&avatar_for(c, 34));
+            let right_click = gtk::GestureClick::new();
+            right_click.set_button(3);
+            let s = sender.input_sender().clone();
+            let email = c.primary_email().map(str::to_string);
+            right_click.connect_pressed(move |gesture, _, x, y| {
+                let Some(widget) = gesture.widget() else { return };
+                let mut entries = Vec::new();
+                if let Some(email) = email.clone() {
+                    let sc = s.clone();
+                    entries.push(
+                        MenuEntry::new(i18n("New message"), move || {
+                            let _ = sc.send(ContactsPageInput::Compose(email.clone()));
+                        })
+                        .icon("mail-message-new-symbolic"),
+                    );
+                }
+                let sa = s.clone();
+                entries.push(
+                    MenuEntry::new(i18n("Add to Contacts"), move || {
+                        let _ = sa.send(ContactsPageInput::AddDirectoryHit(idx));
+                    })
+                    .icon("contact-new-symbolic"),
+                );
+                show_context_menu(&widget, x, y, vec![entries]);
+            });
+            row.add_controller(right_click);
+            widgets.list.append(&row);
+        }
+
+        // A directory that did not answer, last and not selectable, so a
+        // search that finds nobody in it says why.
+        for f in self.directory_failures.iter().filter(|f| in_filter(&f.uid)) {
+            let row = adw::ActionRow::new();
+            row.add_css_class("directory-hit");
+            row.set_selectable(false);
+            row.set_activatable(false);
+            row.set_title(&gtk::glib::markup_escape_text(&f.name));
+            row.set_subtitle(&gtk::glib::markup_escape_text(&f.message));
+            row.set_subtitle_lines(3);
+            let icon = gtk::Image::from_icon_name("dialog-warning-symbolic");
+            icon.add_css_class("warning");
+            // As wide as an avatar, so the names line up.
+            icon.set_size_request(34, -1);
+            row.add_prefix(&icon);
+            widgets.list.append(&row);
+        }
+
+        // A directory picked in the book filter is empty until searched.
+        let directory_picked = self
+            .book_filter
+            .as_ref()
+            .is_some_and(|b| self.directories.iter().any(|(uid, _)| uid == b));
+        if directory_picked && widgets.list.first_child().is_none() {
+            let text = if self.query.trim().chars().count() < crate::directory::MIN_QUERY {
+                i18n("Type three letters or more to search the directory.")
+            } else {
+                i18n("Nobody in the directory matches.")
+            };
+            let label = gtk::Label::new(Some(&text));
+            label.add_css_class("dim-label");
+            label.set_wrap(true);
+            label.set_justify(gtk::Justification::Center);
+            label.set_margin_top(24);
+            label.set_margin_start(12);
+            label.set_margin_end(12);
+            let row = gtk::ListBoxRow::new();
+            row.set_selectable(false);
+            row.set_activatable(false);
+            row.set_child(Some(&label));
+            widgets.list.append(&row);
+        }
+
         // Selection: keep it if it survived the filter, else the first match.
         let shown_pos = self
             .selected
@@ -878,9 +1157,10 @@ impl ContactsPage {
         while let Some(child) = detail.first_child() {
             detail.remove(&child);
         }
-        let Some(c) = self.selected.and_then(|i| self.contacts.get(i)) else {
+        let Some(c) = self.selected.and_then(|i| self.entry(i)) else {
             return;
         };
+        let hit = self.selected.filter(|&i| i >= DIRECTORY);
 
         // ---- identity header: photo, name, who they are ----
         let avatar = avatar_for(c, 96);
@@ -931,6 +1211,20 @@ impl ContactsPage {
             sub.set_justify(gtk::Justification::Center);
             sub.set_margin_top(4);
             detail.append(&sub);
+        }
+
+        // From a directory: it can be kept as a contact, not edited here.
+        if let Some(idx) = hit {
+            let add = gtk::Button::with_label(&i18n("Add to Contacts"));
+            add.add_css_class("pill");
+            add.set_halign(gtk::Align::Center);
+            add.set_margin_top(12);
+            let s = sender.input_sender().clone();
+            add.connect_clicked(move |b| {
+                b.set_sensitive(false);
+                let _ = s.send(ContactsPageInput::AddDirectoryHit(idx));
+            });
+            detail.append(&add);
         }
 
         // ---- field groups ----
@@ -1003,8 +1297,11 @@ impl ContactsPage {
         if !c.note.is_empty() {
             extras.push(Labeled { label: i18n("Note"), value: c.note.clone() });
         }
-        // Where this entry lives — the local book or a synced account.
-        if !c.book_name.is_empty() {
+        // Where this entry lives: the local book, a synced account, or the
+        // directory it was found in.
+        if hit.is_some() {
+            extras.push(Labeled { label: i18n("Directory"), value: c.book_name.clone() });
+        } else if !c.book_name.is_empty() {
             extras.push(Labeled { label: i18n("Address Book"), value: c.book_name.clone() });
         }
         if !extras.is_empty() {
@@ -1126,6 +1423,19 @@ impl ContactsPage {
 
         self.editor = Some(Editor { name, nickname, org, title, note, emails, phones, urls, book });
     }
+}
+
+/// Whether a contact matches a search, already lower case; an empty one
+/// matches everyone.
+fn matches_query(c: &ContactDetails, q: &str) -> bool {
+    if q.is_empty() {
+        return true;
+    }
+    c.name.to_lowercase().contains(q)
+        || c.nickname.to_lowercase().contains(q)
+        || c.org.to_lowercase().contains(q)
+        || c.emails.iter().any(|e| e.value.to_lowercase().contains(q))
+        || c.phones.iter().any(|p| p.value.to_lowercase().contains(q))
 }
 
 /// Ask for `.vcf` files to import into the Hylki book, and hand their paths

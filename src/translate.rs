@@ -793,7 +793,7 @@ fn prepare_blocks(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     for block in crate::reader::extract_blocks(body) {
         match block
-            .strip_prefix("<div class=\"vireo-plain\">")
+            .strip_prefix("<div class=\"hylki-plain\">")
             .and_then(|b| b.strip_suffix("</div>"))
         {
             Some(text) => {

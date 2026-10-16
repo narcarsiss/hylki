@@ -87,6 +87,9 @@ pub struct MessageView {
     /// Read-marking policy (#100), stamped on the document for the
     /// viewport observer.
     read_mark: crate::config::ReadMark,
+    /// Rows Gmail's x has checked in the list (#392), and whether they are
+    /// conversations: the empty pane counts them.
+    checked: (usize, bool),
     /// Whether the blocked-content banner is shown at all. It gates only the notice: `blocked`
     /// still governs what is withheld, so hiding it never loads anything.
     show_banner: bool,
@@ -153,6 +156,9 @@ pub struct MessageView {
     /// its first card), not flush at the top the way a place the user
     /// scrolled to is restored.
     anchor_gutter: bool,
+    /// The next document goes in without the page crossfade: a sent reply's
+    /// card is arriving, and the app's stage covers the pane while it does.
+    skip_fade: bool,
     /// What each message's frame measured last time it was shown, so reopening a
     /// conversation lays out right away instead of settling into place.
     frame_heights: std::collections::HashMap<(u32, u32), u32>,
@@ -176,6 +182,12 @@ pub struct MessageView {
     under_split: bool,
     find_matches: Option<(u32, u32)>,
     find_entry: Option<gtk::SearchEntry>,
+    /// The page shown while a message loads, and whether it is holding the
+    /// keyboard for the web view meanwhile (#392). A web view whose document
+    /// is being replaced drops the keys it is given, so a shortcut pressed
+    /// then never arrived; this page lets them through.
+    loading_page: Option<gtk::Box>,
+    focus_held: std::cell::Cell<bool>,
     /// When find last closed itself (empty entry blur) — the toolbar click
     /// that caused the blur must not instantly reopen it.
     find_closed_at: Option<std::time::Instant>,
@@ -256,9 +268,9 @@ impl MessageView {
         // lock/shield and color once a verdict exists.
         let pgp = match &check.pgp {
             Some(p) => format!(
-                "var p=document.querySelector('.vireo-pgp[data-key=\"{account_id}:{id}\"]');\
-                 if(p){{p.className='vireo-pgp on{enc}{sig} {cls}';p.title={title:?};\
-                 var t=p.querySelector('.vireo-pgp-text');if(t)t.textContent={label:?};}}",
+                "var p=document.querySelector('.hylki-pgp[data-key=\"{account_id}:{id}\"]');\
+                 if(p){{p.className='hylki-pgp on{enc}{sig} {cls}';p.title={title:?};\
+                 var t=p.querySelector('.hylki-pgp-text');if(t)t.textContent={label:?};}}",
                 enc = if p.encrypted { " enc" } else { "" },
                 sig = if p.signed() { " sig" } else { "" },
                 cls = p.css_class(),
@@ -268,21 +280,24 @@ impl MessageView {
             None => String::new(),
         };
         // The sensitivity label (#411): read-only, shown as the sender's
-        // organization named it.
+        // organization named it, its icon in the label's color when the
+        // organization's list gave one (a checked `#rrggbb`; empty clears).
         let label = match &check.label {
             Some(l) => format!(
-                "var l=document.querySelector('.vireo-sens[data-key=\"{account_id}:{id}\"]');\
-                 if(l){{l.className='vireo-sens on';l.title={title:?};\
-                 var t=l.querySelector('.vireo-sens-text');if(t)t.textContent={text:?};}}",
+                "var l=document.querySelector('.hylki-sens[data-key=\"{account_id}:{id}\"]');\
+                 if(l){{l.className='hylki-sens on';l.title={title:?};\
+                 l.style.setProperty('--hylki-sens',{color:?});\
+                 var t=l.querySelector('.hylki-sens-text');if(t)t.textContent={text:?};}}",
                 title = l.summary(),
                 text = l.short_label(),
+                color = l.color,
             ),
             None => String::new(),
         };
         let js = format!(
             "(function(){{{pgp}{label}\
-             var b=document.querySelector('.vireo-verify[data-key=\"{account_id}:{id}\"]');\
-             if(!b)return;b.className='vireo-verify on {cls}';b.title={title:?};}})()",
+             var b=document.querySelector('.hylki-verify[data-key=\"{account_id}:{id}\"]');\
+             if(!b)return;b.className='hylki-verify on {cls}';b.title={title:?};}})()",
             cls = check.trust.css_class(),
             title = check.trust.label(),
         );
@@ -301,7 +316,7 @@ impl MessageView {
         };
         let button = |label: &str, title: &str| {
             format!(
-                "<button type=\"button\" class=\"vireo-unsub-btn\" data-key=\"{}:{}\" title=\"{}\">{}</button>",
+                "<button type=\"button\" class=\"hylki-unsub-btn\" data-key=\"{}:{}\" title=\"{}\">{}</button>",
                 key.0,
                 key.1,
                 attr_escape(title),
@@ -344,7 +359,7 @@ impl MessageView {
                 (text, btn)
             }
         };
-        format!("<span class=\"vireo-unsub-text\">{}</span>{btn}", escape_text(&text))
+        format!("<span class=\"hylki-unsub-text\">{}</span>{btn}", escape_text(&text))
     }
 
     /// Redraw one card's Unsubscribe banner in the live document.
@@ -357,7 +372,7 @@ impl MessageView {
         };
         let html = self.unsub_inner_html(m);
         let js = format!(
-            "(function(){{var d=document.querySelector('.vireo-unsub[data-key=\"{account_id}:{id}\"]');\
+            "(function(){{var d=document.querySelector('.hylki-unsub[data-key=\"{account_id}:{id}\"]');\
              if(d)d.innerHTML={};}})()",
             serde_json::to_string(&html).unwrap_or_else(|_| "''".into()),
         );
@@ -382,13 +397,13 @@ impl MessageView {
         let key = (m.account_id, m.id);
         let button = |label: &str| {
             format!(
-                "<button type=\"button\" class=\"vireo-tr-btn\" data-key=\"{}:{}\">{}</button>",
+                "<button type=\"button\" class=\"hylki-tr-btn\" data-key=\"{}:{}\">{}</button>",
                 key.0,
                 key.1,
                 escape_text(label),
             )
         };
-        let line = |text: &str, btn: String| format!("<span class=\"vireo-tr-text\">{}</span>{btn}", escape_text(text));
+        let line = |text: &str, btn: String| format!("<span class=\"hylki-tr-text\">{}</span>{btn}", escape_text(text));
         let name = crate::translate::language_name;
         match self.translations.get(&key) {
             Some(TrState::Working) => line(&i18n("Translating…"), String::new()),
@@ -419,6 +434,24 @@ impl MessageView {
                     _ => String::new(),
                 }
             }
+        }
+    }
+
+    /// What the empty pane is titled: how many rows are checked, while
+    /// Gmail's x has some (#392).
+    fn empty_title(&self) -> String {
+        let n = self.checked.0;
+        if n > 0 {
+            let count = n.to_string();
+            if self.checked.1 {
+                ni18n_f("{n} conversation selected", "{n} conversations selected", n as u32, &[("n", &count)])
+            } else {
+                ni18n_f("{n} message selected", "{n} messages selected", n as u32, &[("n", &count)])
+            }
+        } else if self.drafts_view {
+            i18n("No draft selected")
+        } else {
+            i18n("No message selected")
         }
     }
 
@@ -459,7 +492,7 @@ impl MessageView {
         let from = if m.from_name.trim().is_empty() { &m.from_addr } else { &m.from_name };
         let icon = |name: &str, title: &str| {
             format!(
-                "<span class=\"vireo-fbar-ico\" title=\"{}\">{}</span>",
+                "<span class=\"hylki-fbar-ico\" title=\"{}\">{}</span>",
                 attr_escape(title),
                 inline_icon_svg(name)
             )
@@ -479,14 +512,14 @@ impl MessageView {
         let clip = if m.has_attachment {
             icon("mail-attachment-symbolic", &i18n("Has attachments"))
         } else {
-            "<span class=\"vireo-fbar-ico vireo-fbar-none\"></span>".to_string()
+            "<span class=\"hylki-fbar-ico hylki-fbar-none\"></span>".to_string()
         };
         // Below the sender, as many lines of preview as the message list
         // shows (#326). No subject: the conversation's is the heading above.
         let preview = crate::models::preview_display(&m.preview);
         let preview = if self.fold_preview_lines > 0 && !preview.trim().is_empty() {
             format!(
-                "<div class=\"vireo-fbar-prev\" style=\"-webkit-line-clamp:{}\">{}</div>",
+                "<div class=\"hylki-fbar-prev\" style=\"-webkit-line-clamp:{}\">{}</div>",
                 self.fold_preview_lines,
                 escape_text(preview.trim()),
             )
@@ -494,10 +527,10 @@ impl MessageView {
             String::new()
         };
         format!(
-            "<div class=\"vireo-fbar\" data-key=\"{}:{}\" title=\"{}\">\
-             {FOLD_BAR_FACE}<div class=\"vireo-fbar-main\"><div class=\"vireo-fbar-top\">\
-             <span class=\"vireo-fbar-from\">{}</span>{star}{place}{clip}\
-             <span class=\"vireo-fbar-date\">{}</span></div>{preview}</div></div>",
+            "<div class=\"hylki-fbar\" data-key=\"{}:{}\" title=\"{}\">\
+             {FOLD_BAR_FACE}<div class=\"hylki-fbar-main\"><div class=\"hylki-fbar-top\">\
+             <span class=\"hylki-fbar-from\">{}</span>{star}{place}{clip}\
+             <span class=\"hylki-fbar-date\">{}</span></div>{preview}</div></div>",
             key.0,
             key.1,
             attr_escape(&i18n("Click to open this message")),
@@ -514,11 +547,11 @@ impl MessageView {
         }
         let keys: Vec<String> = self.folded_cards().iter().map(|(a, i)| format!("{a}:{i}")).collect();
         let js = format!(
-            "(function(k){{var ms=document.querySelectorAll('.vireo-msg');\
+            "(function(k){{var ms=document.querySelectorAll('.hylki-msg');\
              for(var i=0;i<ms.length;i++){{var on=k.indexOf(ms[i].dataset.key)>=0;\
-             if(ms[i].classList.contains('vireo-folded')===on)continue;\
-             ms[i].classList.toggle('vireo-folded',on);\
-             if(!on){{var f=ms[i].querySelector('iframe.vireo-frame');if(f){{f._h=0;s(f);}}}}}}}})({})",
+             if(ms[i].classList.contains('hylki-folded')===on)continue;\
+             ms[i].classList.toggle('hylki-folded',on);\
+             if(!on){{var f=ms[i].querySelector('iframe.hylki-frame');if(f){{f._h=0;s(f);}}}}}}}})({})",
             serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into()),
         );
         self.webview.evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
@@ -558,7 +591,7 @@ impl MessageView {
         };
         let html = self.translate_inner_html(m, &crate::translate::load());
         let js = format!(
-            "(function(){{var d=document.querySelector('.vireo-tr[data-key=\"{account_id}:{id}\"]');\
+            "(function(){{var d=document.querySelector('.hylki-tr[data-key=\"{account_id}:{id}\"]');\
              if(d)d.innerHTML={};}})()",
             serde_json::to_string(&html).unwrap_or_else(|_| "''".into()),
         );
@@ -579,7 +612,7 @@ impl MessageView {
             if text.trim().is_empty() {
                 String::new()
             } else {
-                format!("<div class=\"vireo-inv-row\">{}</div>", escape_text(text))
+                format!("<div class=\"hylki-inv-row\">{}</div>", escape_text(text))
             }
         };
         // The heading: the meeting's name, and what this message does to it.
@@ -665,7 +698,7 @@ impl MessageView {
             use crate::models::Rsvp;
             let answer = |rsvp: Rsvp, verb: &str, label: String, title: String| {
                 format!(
-                    "<button type=\"button\" class=\"vireo-inv-btn {verb}{on}\" \
+                    "<button type=\"button\" class=\"hylki-inv-btn {verb}{on}\" \
                      data-key=\"{}:{}\" data-inv=\"{verb}\" title=\"{}\">{}</button>",
                     key.0,
                     key.1,
@@ -698,7 +731,7 @@ impl MessageView {
         // asking about.
         if !inv.cancelled && inv.method != "CANCEL" && inv.method != "REPLY" && !inv.ics.is_empty() {
             buttons.push_str(&format!(
-                "<button type=\"button\" class=\"vireo-inv-btn cal\" data-key=\"{}:{}\" \
+                "<button type=\"button\" class=\"hylki-inv-btn cal\" data-key=\"{}:{}\" \
                  data-inv=\"cal\" title=\"{}\">{}</button>",
                 key.0,
                 key.1,
@@ -708,10 +741,10 @@ impl MessageView {
         }
 
         format!(
-            "<div class=\"vireo-inv-icon\">{icon}</div>\
-             <div class=\"vireo-inv-body\">\
-               <div class=\"vireo-inv-head\">\
-                 <span class=\"vireo-inv-title{struck}\">{title}</span>{kind}\
+            "<div class=\"hylki-inv-icon\">{icon}</div>\
+             <div class=\"hylki-inv-body\">\
+               <div class=\"hylki-inv-head\">\
+                 <span class=\"hylki-inv-title{struck}\">{title}</span>{kind}\
                </div>{when}{where_}{who}{note}{acts}\
              </div>",
             icon = inline_icon_svg("x-office-calendar-symbolic"),
@@ -720,7 +753,7 @@ impl MessageView {
             kind = if kind.is_empty() {
                 String::new()
             } else {
-                format!("<span class=\"vireo-inv-kind\">{}</span>", escape_text(&kind))
+                format!("<span class=\"hylki-inv-kind\">{}</span>", escape_text(&kind))
             },
             when = row(&when),
             where_ = row(&inv.location),
@@ -728,12 +761,12 @@ impl MessageView {
             note = if note.is_empty() {
                 String::new()
             } else {
-                format!("<div class=\"vireo-inv-note\">{}</div>", escape_text(&note))
+                format!("<div class=\"hylki-inv-note\">{}</div>", escape_text(&note))
             },
             acts = if buttons.is_empty() {
                 String::new()
             } else {
-                format!("<div class=\"vireo-inv-acts\">{buttons}</div>")
+                format!("<div class=\"hylki-inv-acts\">{buttons}</div>")
             },
         )
     }
@@ -769,7 +802,7 @@ impl MessageView {
         };
         let html = self.invite_inner_html(m);
         let js = format!(
-            "(function(){{var d=document.querySelector('.vireo-inv[data-key=\"{account_id}:{id}\"]');\
+            "(function(){{var d=document.querySelector('.hylki-inv[data-key=\"{account_id}:{id}\"]');\
              if(d)d.innerHTML={};}})()",
             serde_json::to_string(&html).unwrap_or_else(|_| "''".into()),
         );
@@ -957,6 +990,9 @@ pub enum MessageViewInput {
     /// Expand All (false) or Collapse All (true) from the reading pane's
     /// menu (#326).
     FoldAll(bool),
+    /// How many rows Gmail's x has checked (#392), and whether threading
+    /// makes them conversations.
+    SetChecked { count: usize, conversations: bool },
     /// The view came on screen (#332).
     Mapped,
     /// The OpenPGP chip's words on or off (#300), applied to the open
@@ -1157,7 +1193,7 @@ pub enum MessageViewInput {
     SetCardStar { account_id: u32, id: u32, starred: bool },
     /// A message's keywords changed (#71): the card's chips are patched in
     /// place, like the star.
-    SetCardKeywords { account_id: u32, id: u32, keywords: Vec<String> },
+    SetCardKeywords { account_id: u32, id: u32, keywords: Vec<String>, labels: Vec<String> },
     /// The tag definitions changed: re-render with the new names and colors.
     SetTags(Vec<crate::config::Tag>),
     /// Read-marking policy changed (#100).
@@ -1179,6 +1215,10 @@ pub enum MessageViewInput {
     /// the viewport top and the offset into it — kept so a re-render can put
     /// the reader back where they were.
     ScrollAnchor { account_id: u32, id: u32, offset: u32 },
+    /// A sent reply's card is joining the conversation: the next document
+    /// pins it in view, below the page's top gutter, and goes in without the
+    /// page crossfade.
+    PinArrival { account_id: u32, id: u32 },
     /// The list shows Drafts (or not): the empty pane's wording follows.
     SetDraftsView(bool),
     /// Which folders are Templates folders, as (account, folder) (#360).
@@ -1353,7 +1393,7 @@ fn fold_bar_date(m: &Message) -> String {
 fn template_row_html(key: (u32, u32)) -> String {
     let button = |verb: &str, label: &str, title: &str| {
         format!(
-            "<button type=\"button\" class=\"vireo-unsub-btn vireo-tpl-btn\" data-key=\"{}:{}\" \
+            "<button type=\"button\" class=\"hylki-unsub-btn hylki-tpl-btn\" data-key=\"{}:{}\" \
              data-tpl=\"{verb}\" title=\"{}\">{}</button>",
             key.0,
             key.1,
@@ -1362,7 +1402,7 @@ fn template_row_html(key: (u32, u32)) -> String {
         )
     };
     format!(
-        "<div class=\"vireo-unsub vireo-tpl\"><span class=\"vireo-unsub-text\">{}</span>{}{}</div>",
+        "<div class=\"hylki-unsub hylki-tpl\"><span class=\"hylki-unsub-text\">{}</span>{}{}</div>",
         escape_text(&i18n("This message is a template.")),
         button("edit", &i18n("Edit Template"), &i18n("Change the template itself")),
         button("use", &i18n("Use Template"), &i18n("Start a new message from a copy of the template")),
@@ -1370,7 +1410,7 @@ fn template_row_html(key: (u32, u32)) -> String {
 }
 
 fn unsub_row_html(key: (u32, u32), inner: &str) -> String {
-    format!("<div class=\"vireo-unsub\" data-key=\"{}:{}\">{inner}</div>", key.0, key.1)
+    format!("<div class=\"hylki-unsub\" data-key=\"{}:{}\">{inner}</div>", key.0, key.1)
 }
 
 /// A card's invitation banner (#223): the container, always emitted so a
@@ -1378,7 +1418,7 @@ fn unsub_row_html(key: (u32, u32), inner: &str) -> String {
 /// by the stylesheet). `inner` is what [`MessageView::invite_inner_html`]
 /// rendered.
 fn invite_row_html(key: (u32, u32), inner: &str) -> String {
-    format!("<div class=\"vireo-inv\" data-key=\"{}:{}\">{inner}</div>", key.0, key.1)
+    format!("<div class=\"hylki-inv\" data-key=\"{}:{}\">{inner}</div>", key.0, key.1)
 }
 
 /// "Repeats weekly", from the event's `RRULE`. Only the frequency and the
@@ -1450,7 +1490,7 @@ fn answer_note(plain: String, dated: String, at: i64) -> String {
 /// arrival can be patched into it (an empty row is hidden by the stylesheet).
 fn att_row_html(key: (u32, u32), atts: Option<&[CardAttachment]>) -> String {
     format!(
-        "<div class=\"vireo-atts\" data-key=\"{}:{}\">{}</div>",
+        "<div class=\"hylki-atts\" data-key=\"{}:{}\">{}</div>",
         key.0,
         key.1,
         att_chips_html(key, atts.unwrap_or(&[]))
@@ -1466,12 +1506,12 @@ fn att_chips_html(key: (u32, u32), atts: &[CardAttachment]) -> String {
     for (idx, a) in atts.iter().enumerate() {
         let icon = icon_for(&a.name);
         out.push_str(&format!(
-            "<span class=\"vireo-attw\">\
-             <button type=\"button\" class=\"vireo-attc {cls}\" data-key=\"{aid}:{id}\" \
+            "<span class=\"hylki-attw\">\
+             <button type=\"button\" class=\"hylki-attc {cls}\" data-key=\"{aid}:{id}\" \
              data-idx=\"{idx}\" title=\"{open}\">{svg}\
-             <span class=\"vireo-attn\">{name}</span>\
-             <span class=\"vireo-attz\">{size}</span></button>\
-             <button type=\"button\" class=\"vireo-attsave\" data-key=\"{aid}:{id}\" \
+             <span class=\"hylki-attn\">{name}</span>\
+             <span class=\"hylki-attz\">{size}</span></button>\
+             <button type=\"button\" class=\"hylki-attsave\" data-key=\"{aid}:{id}\" \
              data-idx=\"{idx}\" title=\"{save}\">{dl}</button></span>",
             cls = icon_color_class(&a.name),
             aid = key.0,
@@ -1494,15 +1534,19 @@ fn tag_chips_html(tags: &[crate::config::Tag], keywords: &[String], labels: &[St
     for pill in crate::models::pills(keywords, labels, tags) {
         match pill {
             crate::models::Pill::Tag(t) => out.push_str(&format!(
-                "<span class=\"vireo-tag\" style=\"background:{bg};color:{fg}\">{name}</span>",
+                "<span class=\"hylki-tag\" style=\"background:{bg};color:{fg}\">{name}</span>",
                 bg = gtk::glib::markup_escape_text(&t.color),
                 fg = crate::color::readable_text(&t.color),
                 name = gtk::glib::markup_escape_text(&t.name),
             )),
-            crate::models::Pill::Label(name) => out.push_str(&format!(
-                "<span class=\"vireo-tag vireo-label\" title=\"{name}\">{name}</span>",
-                name = gtk::glib::markup_escape_text(&name),
-            )),
+            crate::models::Pill::Label(name) => {
+                let color = crate::config::TAG_COLORS[crate::models::label_hue(&name)];
+                out.push_str(&format!(
+                    "<span class=\"hylki-tag hylki-label\" style=\"background:{color};color:{fg}\" title=\"{name}\">{name}</span>",
+                    fg = crate::color::readable_text(color),
+                    name = gtk::glib::markup_escape_text(&name),
+                ))
+            }
         }
     }
     out
@@ -1693,11 +1737,19 @@ impl Component for MessageView {
             add_named[Some("empty")] = &adw::StatusPage {
                 // Drafts open in the editor, so the empty pane says so there.
                 #[watch]
-                set_icon_name: Some(if model.drafts_view { "document-edit-symbolic" } else { "hylki-mail-read-symbolic" }),
+                set_icon_name: Some(if model.checked.0 > 0 {
+                    "object-select-symbolic"
+                } else if model.drafts_view {
+                    "document-edit-symbolic"
+                } else {
+                    "hylki-mail-read-symbolic"
+                }),
                 #[watch]
-                set_title: &if model.drafts_view { i18n("No draft selected") } else { i18n("No message selected") },
+                set_title: &model.empty_title(),
                 #[watch]
-                set_description: Some(if model.drafts_view {
+                set_description: Some(if model.checked.0 > 0 {
+                    i18n("The actions above the list apply to all of them.")
+                } else if model.drafts_view {
                     i18n("Choose a draft from the list to edit it here.")
                 } else {
                     i18n("Choose a message from the list to read it here.")
@@ -1873,7 +1925,7 @@ impl Component for MessageView {
                                 #[watch]
                                 set_label: model.account_name.as_deref().unwrap_or_default(),
                                 add_css_class: "account-chip",
-                                add_css_class: "vireo-account-chip",
+                                add_css_class: "hylki-account-chip",
                             },
                         },
 
@@ -1888,7 +1940,7 @@ impl Component for MessageView {
                             set_visible: model.current.is_some() && model.zoom != model.zoom_default,
                             set_valign: gtk::Align::Center,
                             add_css_class: "caption",
-                            add_css_class: "vireo-zoom-chip",
+                            add_css_class: "hylki-zoom-chip",
                             set_cursor_from_name: Some("pointer"),
                             set_tooltip_text: Some(i18n("Message zoom. Ctrl+ and Ctrl- change it; a click here, or Ctrl+0, puts it back to the default from Settings.").as_str()),
                             add_controller = gtk::GestureClick {
@@ -2007,8 +2059,10 @@ impl Component for MessageView {
                     #[watch]
                     set_visible_child_name: model.body_page(),
 
+                    #[name = "loading_page"]
                     add_named[Some("loading")] = &gtk::Box {
                         add_css_class: "reader-loading",
+                        set_focusable: true,
                         set_orientation: gtk::Orientation::Vertical,
                         set_halign: gtk::Align::Center,
                         set_valign: gtk::Align::Center,
@@ -2090,6 +2144,7 @@ impl Component for MessageView {
             zoom_default: 100,
             reader_default: crate::config::ReaderDefault::Remember,
             read_mark: crate::config::ReadMark::default(),
+            checked: (0, false),
             show_banner: crate::config::load_privacy().show_remote_banner,
             show_spoof_banner: crate::config::load_privacy().show_spoof_banner,
             card_actions_hover: crate::config::load_privacy().card_actions_hover,
@@ -2107,6 +2162,7 @@ impl Component for MessageView {
             autoscroll_lone: false,
             saved_anchor: None,
             anchor_gutter: false,
+            skip_fade: false,
             drafts_view: false,
             template_folders: std::collections::HashSet::new(),
             frame_heights: std::collections::HashMap::new(),
@@ -2119,6 +2175,8 @@ impl Component for MessageView {
             under_split: false,
             find_matches: None,
             find_entry: None,
+            loading_page: None,
+            focus_held: std::cell::Cell::new(false),
             find_closed_at: None,
             webview,
             sender_check: None,
@@ -2528,6 +2586,7 @@ impl Component for MessageView {
         let header_tags = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         let widgets = view_output!();
         model.find_entry = Some(widgets.find_entry.clone());
+        model.loading_page = Some(widgets.loading_page.clone());
         model.account_chip = Some(widgets.account_chip.clone());
         model.cover = Some(widgets.body_stack.clone());
         model.apply_webview_bg(model.effective_dark());
@@ -2542,6 +2601,7 @@ impl Component for MessageView {
 
     fn post_view() {
         self.sync_header_tags(&widgets.header_tags);
+        self.hold_focus_while_loading();
     }
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, _root: &Self::Root) {
@@ -2609,7 +2669,7 @@ impl Component for MessageView {
                         color.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>()
                     );
                     self.chip_rules.set(vec![(
-                        format!(".vireo-account-chip.{class}"),
+                        format!(".hylki-account-chip.{class}"),
                         format!("background-color: {}; color: {color};", crate::color::pale(color, 0.18)),
                     )]);
                     if let Some(chip) = &self.account_chip {
@@ -2727,6 +2787,7 @@ impl Component for MessageView {
                     self.render();
                 }
             }
+            MessageViewInput::SetChecked { count, conversations } => self.checked = (count, conversations),
             MessageViewInput::FoldAll(folded) => {
                 for m in &self.thread {
                     self.folds.insert((m.account_id, m.id), folded);
@@ -2739,7 +2800,7 @@ impl Component for MessageView {
             MessageViewInput::SetPgpLabels(on) => {
                 self.pgp_labels = on;
                 let js = format!(
-                    "document.body&&document.body.toggleAttribute('data-vireo-pgpicons',{})",
+                    "document.body&&document.body.toggleAttribute('data-hylki-pgpicons',{})",
                     !on
                 );
                 self.webview.evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
@@ -2771,8 +2832,8 @@ impl Component for MessageView {
                 // with the row flashed so the eye lands on it.
                 let js = format!(
                     "(function(){{\
-                     var d=document.querySelector('.vireo-atts[data-key=\"{account_id}:{id}\"]');\
-                     var s=document.querySelector('.vireo-msg[data-key=\"{account_id}:{id}\"]');\
+                     var d=document.querySelector('.hylki-atts[data-key=\"{account_id}:{id}\"]');\
+                     var s=document.querySelector('.hylki-msg[data-key=\"{account_id}:{id}\"]');\
                      var t=(d&&d.children.length)?d:s;if(!t)return;\
                      t.scrollIntoView({{behavior:'smooth',block:'center'}});\
                      if(d){{d.classList.remove('flash');void d.offsetWidth;d.classList.add('flash');\
@@ -3126,13 +3187,13 @@ impl Component for MessageView {
                 // blip ClearDot avoids in the other direction).
                 let js = format!(
                     "(function(){{\
-                     var s=document.querySelector('.vireo-msg[data-key=\"{account_id}:{id}\"]');\
+                     var s=document.querySelector('.hylki-msg[data-key=\"{account_id}:{id}\"]');\
                      if(s)s.classList.add('unread');\
-                     var h=document.querySelector('.vireo-msg-hdr[data-key=\"{account_id}:{id}\"]');\
-                     if(!h||h.querySelector('.vireo-dot'))return;\
-                     var d=document.createElement('span');d.className='vireo-dot';\
+                     var h=document.querySelector('.hylki-msg-hdr[data-key=\"{account_id}:{id}\"]');\
+                     if(!h||h.querySelector('.hylki-dot'))return;\
+                     var d=document.createElement('span');d.className='hylki-dot';\
                      d.setAttribute('data-key','{account_id}:{id}');\
-                     var f=h.querySelector('.vireo-from');\
+                     var f=h.querySelector('.hylki-from');\
                      if(f)f.parentNode.insertBefore(d,f);else h.appendChild(d);}})()"
                 );
                 self.webview
@@ -3236,16 +3297,20 @@ impl Component for MessageView {
                 let from = match self.selected_cards.as_slice() {
                     [key] => order.iter().position(|k| k == key),
                     _ => None,
-                }
-                .or_else(|| {
-                    let c = self.current.as_ref()?;
-                    order.iter().position(|k| *k == (c.account_id, c.id))
-                });
+                };
                 let last = order.len() as i64 - 1;
                 let next = match from {
                     Some(i) => (i as i64 + i64::from(delta)).clamp(0, last) as usize,
-                    None if delta > 0 => 0,
-                    None => last as usize,
+                    // No card picked yet: the first press lands where reading
+                    // starts, the first message unread or open, not one past
+                    // the conversation's first (#392).
+                    None => {
+                        let folded = self.folded_cards();
+                        self.thread
+                            .iter()
+                            .position(|m| m.unread || !folded.contains(&(m.account_id, m.id)))
+                            .unwrap_or(if delta > 0 { 0 } else { last as usize })
+                    }
                 };
                 let key = order[next];
                 if self.folded_cards().contains(&key) {
@@ -3256,7 +3321,7 @@ impl Component for MessageView {
                 self.apply_card_selection();
                 let _ = sender.output(MessageViewOutput::SelectCards(vec![key]));
                 let js = format!(
-                    "(function(){{var s=document.querySelector('.vireo-msg[data-key=\"{}:{}\"]');\
+                    "(function(){{var s=document.querySelector('.hylki-msg[data-key=\"{}:{}\"]');\
                      if(s)s.scrollIntoView({{behavior:'smooth',block:'start'}});}})()",
                     key.0, key.1
                 );
@@ -3264,7 +3329,15 @@ impl Component for MessageView {
             }
             MessageViewInput::FocusBody => {
                 if self.current.is_some() {
-                    self.webview.grab_focus();
+                    match &self.loading_page {
+                        Some(page) if self.body_page() == "loading" => {
+                            page.grab_focus();
+                            self.focus_held.set(true);
+                        }
+                        _ => {
+                            self.webview.grab_focus();
+                        }
+                    }
                 }
             }
             MessageViewInput::ComposeTo(addr) => {
@@ -3300,6 +3373,13 @@ impl Component for MessageView {
                 // reopened — the viewport observer must not undo it.
                 if self.no_autoread.contains(&(account_id, id)) {
                     return;
+                }
+                // A card read while open stays open: folding the read ones
+                // is for when the conversation is drawn, not under the
+                // reader's eyes the next time the folds are patched.
+                let key = (account_id, id);
+                if !self.folded_cards().contains(&key) {
+                    self.folds.entry(key).or_insert(false);
                 }
                 // Keep the local copy in step so a later re-render doesn't put
                 // the mark back on a message already read.
@@ -3428,9 +3508,9 @@ impl Component for MessageView {
                 }
                 let js = format!(
                     "(function(){{\
-                     var d=document.querySelector('.vireo-dot[data-key=\"{account_id}:{id}\"]');\
+                     var d=document.querySelector('.hylki-dot[data-key=\"{account_id}:{id}\"]');\
                      if(d)d.remove();\
-                     var s=document.querySelector('.vireo-msg[data-key=\"{account_id}:{id}\"]');\
+                     var s=document.querySelector('.hylki-msg[data-key=\"{account_id}:{id}\"]');\
                      if(s)s.classList.remove('unread');}})()"
                 );
                 self.webview
@@ -3504,27 +3584,23 @@ impl Component for MessageView {
                     }
                 }
             }
-            MessageViewInput::SetCardKeywords { account_id, id, keywords } => {
+            MessageViewInput::SetCardKeywords { account_id, id, keywords, labels } => {
                 for m in self.thread.iter_mut() {
                     if m.account_id == account_id && m.id == id {
                         m.keywords = keywords.clone();
+                        m.labels = labels.clone();
                     }
                 }
                 if let Some(c) = self.current.as_mut() {
                     if c.account_id == account_id && c.id == id {
                         c.keywords = keywords.clone();
+                        c.labels = labels.clone();
                     }
                 }
-                let labels = self
-                    .thread
-                    .iter()
-                    .find(|m| m.account_id == account_id && m.id == id)
-                    .map(|m| m.labels.clone())
-                    .unwrap_or_default();
                 let chips = tag_chips_html(&self.tags, &keywords, &labels);
                 let js = format!(
                     "(function(){{\
-                     var t=document.querySelector('.vireo-tags[data-key=\"{account_id}:{id}\"]');\
+                     var t=document.querySelector('.hylki-tags[data-key=\"{account_id}:{id}\"]');\
                      if(t)t.innerHTML={chips};}})()",
                     chips = serde_json::to_string(&chips).unwrap_or_else(|_| "''".into()),
                 );
@@ -3543,7 +3619,7 @@ impl Component for MessageView {
                 }
                 let js = format!(
                     "(function(){{\
-                     var b=document.querySelector('.vireo-act[data-act=\"star\"][data-key=\"{account_id}:{id}\"]');\
+                     var b=document.querySelector('.hylki-act[data-act=\"star\"][data-key=\"{account_id}:{id}\"]');\
                      if(b)b.classList.{}('on');}})()",
                     if starred { "add" } else { "remove" },
                 );
@@ -3572,10 +3648,10 @@ impl Component for MessageView {
                         }
                         let js = format!(
                             "(function(){{\
-                             if(!document.body.classList.contains('vireo-conv'))return;\
-                             var s=document.querySelector('.vireo-msg[data-key=\"{account_id}:{id}\"]');\
+                             if(!document.body.classList.contains('hylki-conv'))return;\
+                             var s=document.querySelector('.hylki-msg[data-key=\"{account_id}:{id}\"]');\
                              if(!s)return;\
-                             document.querySelectorAll('.vireo-msg.selected').forEach(function(e){{e.classList.remove('selected');}});\
+                             document.querySelectorAll('.hylki-msg.selected').forEach(function(e){{e.classList.remove('selected');}});\
                              s.classList.add('selected');\
                              s.style.scrollMarginTop='14px';\
                              s.scrollIntoView({{behavior:'smooth',block:'start'}});}})()"
@@ -3597,7 +3673,7 @@ impl Component for MessageView {
             MessageViewInput::BlurCard => {
                 self.focus_gen.set(self.focus_gen.get() + 1);
                 self.webview.evaluate_javascript(
-                    "(function(){document.querySelectorAll('.vireo-msg.selected')\
+                    "(function(){document.querySelectorAll('.hylki-msg.selected')\
                      .forEach(function(e){e.classList.remove('selected');});})()",
                     None,
                     None,
@@ -3614,6 +3690,13 @@ impl Component for MessageView {
             MessageViewInput::ScrollAnchor { account_id, id, offset } => {
                 self.saved_anchor = Some((account_id, id, offset));
                 self.anchor_gutter = false;
+            }
+            MessageViewInput::PinArrival { account_id, id } => {
+                self.saved_anchor = Some((account_id, id, 0));
+                self.anchor_gutter = true;
+                // The anchor rides only on a document that keeps its place.
+                self.did_autoscroll = true;
+                self.skip_fade = true;
             }
             MessageViewInput::SetDraftsView(on) => {
                 self.drafts_view = on;
@@ -3694,7 +3777,7 @@ impl MessageView {
             .map(|(a, i)| format!("'{a}:{i}'"))
             .collect();
         let js = format!(
-            "(function(){{var s=[{}];             var els=document.querySelectorAll('.vireo-msg');             for(var i=0;i<els.length;i++){{var k=els[i].dataset.key;             els[i].classList.toggle('selected', s.indexOf(k)>=0);}}}})()",
+            "(function(){{var s=[{}];             var els=document.querySelectorAll('.hylki-msg');             for(var i=0;i<els.length;i++){{var k=els[i].dataset.key;             els[i].classList.toggle('selected', s.indexOf(k)>=0);}}}})()",
             keys.join(",")
         );
         self.webview
@@ -3748,7 +3831,7 @@ impl MessageView {
                 String::new()
             };
             js.push_str(&format!(
-                "var d=document.querySelector('.vireo-atts[data-key=\"{}:{}\"]');if(d)d.innerHTML={};",
+                "var d=document.querySelector('.hylki-atts[data-key=\"{}:{}\"]');if(d)d.innerHTML={};",
                 key.0,
                 key.1,
                 serde_json::to_string(&html).unwrap_or_else(|_| "''".into()),
@@ -3794,7 +3877,7 @@ impl MessageView {
         }
         // Only a page that stays in view dissolves into the next; behind the
         // spinner there is nothing to see.
-        let fade = self.webview_ready && !self.loading;
+        let fade = self.webview_ready && !self.loading && !std::mem::take(&mut self.skip_fade);
         let html = self.document_html(dark);
         // A message painted alone that has since grown into a conversation
         // gets the conversation's open scroll, unless the reader has been
@@ -3811,10 +3894,10 @@ impl MessageView {
                 .saved_anchor
                 .map(|(a, i, o)| {
                     let g = if self.anchor_gutter { ":g" } else { "" };
-                    format!(" data-vireo-anchor=\"{a}:{i}:{o}{g}\"")
+                    format!(" data-hylki-anchor=\"{a}:{i}:{o}{g}\"")
                 })
                 .unwrap_or_default();
-            format!(" data-vireo-noscroll=\"1\"{anchor}")
+            format!(" data-hylki-noscroll=\"1\"{anchor}")
         } else {
             String::new()
         };
@@ -3823,27 +3906,27 @@ impl MessageView {
         // behind the ⋯, "hover" shows them while the card is hovered, and no
         // stamp means always shown.
         let hover = if self.card_actions_hover {
-            " data-vireo-acts=\"toggle\""
+            " data-hylki-acts=\"toggle\""
         } else if self.card_actions_auto {
-            " data-vireo-acts=\"hover\""
+            " data-hylki-acts=\"hover\""
         } else {
             ""
         };
         // The palette timeout rides along in ms; the script reads it for the
         // toggle mode's collapse timer and the hover mode's fade-out delay.
         let delay = format!(
-            " data-vireo-actsdelay=\"{}\"",
+            " data-hylki-actsdelay=\"{}\"",
             self.palette_collapse_secs.max(1) * 1000
         );
         // With the ⋯ set to open the card's menu there is no palette to
         // slide, so the script hands the click back to the app instead.
         let acts_menu = if self.card_palette_menu {
-            " data-vireo-actsmenu=\"1\""
+            " data-hylki-actsmenu=\"1\""
         } else {
             ""
         };
         // The OpenPGP chip as its icons alone, without the words (#300).
-        let pgp_icons = if self.pgp_labels { "" } else { " data-vireo-pgpicons" };
+        let pgp_icons = if self.pgp_labels { "" } else { " data-hylki-pgpicons" };
         // The newest member, for the open-scroll fallback (#101): with no
         // unread mail the reader lands on the newest message rather than
         // wherever the document happens to start.
@@ -3852,16 +3935,16 @@ impl MessageView {
             .iter()
             .max_by_key(|m| m.timestamp)
             .filter(|_| self.thread.len() > 1)
-            .map(|m| format!(" data-vireo-newest=\"{}:{}\"", m.account_id, m.id))
+            .map(|m| format!(" data-hylki-newest=\"{}:{}\"", m.account_id, m.id))
             .unwrap_or_default();
         // Read-marking policy (#100): the observer marks conversation members
         // as they come into view; "manual" installs no observer at all.
         let readmark = match self.read_mark {
-            crate::config::ReadMark::Shown => " data-vireo-readmark=\"250\"",
-            crate::config::ReadMark::Delay => " data-vireo-readmark=\"2000\"",
+            crate::config::ReadMark::Shown => " data-hylki-readmark=\"250\"",
+            crate::config::ReadMark::Delay => " data-hylki-readmark=\"2000\"",
             crate::config::ReadMark::Manual => "",
         };
-        let copied = format!(" data-vireo-copied=\"{}\"", i18n("Copied").replace('"', "&quot;"));
+        let copied = format!(" data-hylki-copied=\"{}\"", i18n("Copied").replace('"', "&quot;"));
         let html = html.replacen(
             "<body",
             &format!("<body{noscroll}{hover}{delay}{acts_menu}{pgp_icons}{newest}{readmark}{copied}"),
@@ -3964,6 +4047,22 @@ impl MessageView {
 
     /// Which body-stack page to show: spinner while fetching, themed cover while
     /// the WebView loads, then the rendered message(s).
+    /// While a document loads, keep the keyboard on the loading page rather
+    /// than in the web view, and give it back once the document is shown.
+    fn hold_focus_while_loading(&self) {
+        let Some(page) = &self.loading_page else { return };
+        let web: &gtk::Widget = self.webview.upcast_ref();
+        let focus = web.root().and_then(|r| r.focus());
+        if self.body_page() == "loading" {
+            if focus.is_some_and(|f| f == *web || f.is_ancestor(web)) {
+                page.grab_focus();
+                self.focus_held.set(true);
+            }
+        } else if self.focus_held.replace(false) && focus.is_some_and(|f| f == *page.upcast_ref::<gtk::Widget>()) {
+            self.webview.grab_focus();
+        }
+    }
+
     fn body_page(&self) -> &'static str {
         // A document that has been handed over but hasn't painted yet is still
         // loading as far as the reader is concerned. Showing the previous
@@ -4154,7 +4253,7 @@ impl MessageView {
                 .with(|t| t.borrow().get(&(m.account_id, m.id)).and_then(|(_, shown)| shown.clone()))
                 .map_or((None, false), |(html, reader)| (Some(html), reader));
             let body = if m.body.trim().is_empty() && translated.is_none() {
-                "<div class=\"vireo-loading\">Loading…</div>".to_string()
+                "<div class=\"hylki-loading\">Loading…</div>".to_string()
             } else {
                 message_frame(
                     translated.as_deref().unwrap_or(&m.body),
@@ -4189,21 +4288,21 @@ impl MessageView {
                             .then(|| crate::avatar::own_gravatar_data_uri(&m.from_addr, 26))
                             .flatten();
                         if let Some(uri) = gravatar {
-                            return Some(format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">"));
+                            return Some(format!("<img class=\"hylki-ava\" src=\"{uri}\" alt=\"\">"));
                         }
                         match (&face.picture, &face.emoji) {
                             (Some(path), _) => crate::ui::initials::picture_data_uri(path, 26)
-                                .map(|uri| format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">")),
+                                .map(|uri| format!("<img class=\"hylki-ava\" src=\"{uri}\" alt=\"\">")),
                             (None, Some(emoji)) => {
                                 let png = gtk::gdk::RGBA::parse(&face.color)
                                     .ok()
                                     .and_then(|bg| crate::ui::initials::png_data_uri(emoji, bg, 26));
                                 Some(match png {
                                     Some(uri) => {
-                                        format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">")
+                                        format!("<img class=\"hylki-ava\" src=\"{uri}\" alt=\"\">")
                                     }
                                     None => format!(
-                                        "<span class=\"vireo-ava\" style=\"background:{bg}\">{glyph}</span>",
+                                        "<span class=\"hylki-ava\" style=\"background:{bg}\">{glyph}</span>",
                                         bg = attr_escape(&face.color),
                                         glyph = escape_text(emoji),
                                     ),
@@ -4233,23 +4332,23 @@ impl MessageView {
                         // only before a window exists to render with.
                         let bg = crate::ui::initials::hsl(f64::from(hue), 0.52, f64::from(l) / 100.0);
                         match crate::ui::initials::png_data_uri(&initial, bg, 26) {
-                            Some(uri) => format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">"),
+                            Some(uri) => format!("<img class=\"hylki-ava\" src=\"{uri}\" alt=\"\">"),
                             None => format!(
-                                "<span class=\"vireo-ava\" style=\"background:hsl({hue},52%,{l}%)\">{}</span>",
+                                "<span class=\"hylki-ava\" style=\"background:hsl({hue},52%,{l}%)\">{}</span>",
                                 escape_text(&initial),
                             ),
                         }
                     })
                 };
                 sections.push_str(&format!(
-                    "<section class=\"vireo-msg{sel}{unread_cls}{folded_cls}\" data-key=\"{aid}:{id}\">{fbar}\
-                       <header class=\"vireo-msg-hdr\" data-key=\"{aid}:{id}\" \
+                    "<section class=\"hylki-msg{sel}{unread_cls}{folded_cls}\" data-key=\"{aid}:{id}\">{fbar}\
+                       <header class=\"hylki-msg-hdr\" data-key=\"{aid}:{id}\" \
                          title=\"{hdr_title}\">\
-                         <div class=\"vireo-hdr-line\">\
-                           {ava}{dot}<span class=\"vireo-from\">{from}</span>{verify}{addr}\
-                           <span class=\"vireo-tags\" data-key=\"{aid}:{id}\">{tags}</span>\
-                           <span class=\"vireo-hdr-meta\">{folder}{rcpt_toggle}\
-                             <span class=\"vireo-date\">{date}</span></span>\
+                         <div class=\"hylki-hdr-line\">\
+                           {ava}{dot}<span class=\"hylki-from\">{from}</span>{verify}{addr}\
+                           <span class=\"hylki-tags\" data-key=\"{aid}:{id}\">{tags}</span>\
+                           <span class=\"hylki-hdr-meta\">{folder}{rcpt_toggle}\
+                             <span class=\"hylki-date\">{date}</span></span>\
                            {acts_toggle}{acts}\
                          </div>{rcpt}\
                        </header>{tpl}{invite}{unsub}{tr}{body}{atts}</section>",
@@ -4287,7 +4386,7 @@ impl MessageView {
                     // The translation banner (#327), on the same terms.
                     tr = LIVE_TRANSLATE.with(|t| {
                         format!(
-                            "<div class=\"vireo-tr\" data-key=\"{}:{}\">{}</div>",
+                            "<div class=\"hylki-tr\" data-key=\"{}:{}\">{}</div>",
                             m.account_id,
                             m.id,
                             t.borrow().get(&(m.account_id, m.id)).map(|(b, _)| b.as_str()).unwrap_or("")
@@ -4308,7 +4407,7 @@ impl MessageView {
                     // display:none otherwise, so it costs nothing when off.
                     acts_toggle = if !thread.is_empty() {
                         format!(
-                            "<button type=\"button\" class=\"vireo-acts-toggle\" \
+                            "<button type=\"button\" class=\"hylki-acts-toggle\" \
                              title=\"{acts_title}\" data-key=\"{aid}:{id}\">{svg}</button>",
                             aid = m.account_id,
                             id = m.id,
@@ -4326,7 +4425,7 @@ impl MessageView {
                     acts = if !thread.is_empty() {
                         let key = (m.account_id, m.id);
                         format!(
-                            "<span class=\"vireo-acts\">{}{}{}{}{}{}{}{}{}{}{}{}{}</span>",
+                            "<span class=\"hylki-acts\">{}{}{}{}{}{}{}{}{}{}{}{}{}</span>",
                             // Same order as the reader toolbar and the list's
                             // actions palette, View Source closing the line.
                             card_action_button(key, "reply", "mail-reply-sender-symbolic", &i18n("Reply to this message")),
@@ -4337,7 +4436,7 @@ impl MessageView {
                             // are baked in; the section's `unread` class picks
                             // one, so marking read/unread flips in place.
                             format!(
-                                "<button type=\"button\" class=\"vireo-act\" data-act=\"toggleread\" \
+                                "<button type=\"button\" class=\"hylki-act\" data-act=\"toggleread\" \
                                  data-key=\"{aid}:{id}\" title=\"{title}\">\
                                  <span class=\"tr-when-unread\">{read_svg}</span>\
                                  <span class=\"tr-when-read\">{unread_svg}</span></button>",
@@ -4351,7 +4450,7 @@ impl MessageView {
                             // color alone (`.on`, toggled optimistically on
                             // click too).
                             format!(
-                                "<button type=\"button\" class=\"vireo-act{on}\" data-act=\"star\" \
+                                "<button type=\"button\" class=\"hylki-act{on}\" data-act=\"star\" \
                                  data-key=\"{aid}:{id}\" title=\"{title}\">{svg}</button>",
                                 on = if m.starred { " on" } else { "" },
                                 title = gtk::glib::markup_escape_text(&i18n("Star this message")),
@@ -4379,7 +4478,7 @@ impl MessageView {
                             if style.active() && !reader {
                                 let on = sender_style.contains(&key);
                                 format!(
-                                    "<button type=\"button\" class=\"vireo-act{on_cls}\" data-act=\"senderfmt\" \
+                                    "<button type=\"button\" class=\"hylki-act{on_cls}\" data-act=\"senderfmt\" \
                                      data-key=\"{aid}:{id}\" title=\"{title}\">{svg}</button>",
                                     on_cls = if on { " on" } else { "" },
                                     aid = key.0,
@@ -4402,7 +4501,7 @@ impl MessageView {
                             // card that actually has something to load.
                             if has_remote_resources(&m.body) {
                                 format!(
-                                    "<button type=\"button\" class=\"vireo-act{on_cls}\" data-act=\"remote\" \
+                                    "<button type=\"button\" class=\"hylki-act{on_cls}\" data-act=\"remote\" \
                                      data-key=\"{aid}:{id}\" title=\"{title}\">{svg}</button>",
                                     on_cls = if restrict { "" } else { " on" },
                                     aid = key.0,
@@ -4429,7 +4528,7 @@ impl MessageView {
                     unread_cls = if m.unread { " unread" } else { "" },
                     // Folded (#326): the header and a line of preview.
                     folded_cls = if LIVE_FOLDED.with(|f| f.borrow().contains(&(m.account_id, m.id))) {
-                        " vireo-folded"
+                        " hylki-folded"
                     } else {
                         ""
                     },
@@ -4450,12 +4549,12 @@ impl MessageView {
                     // verdict arrives (SenderCheckFor patches it live), then
                     // tinted by trust — Bazaar's fixed blue for a pass.
                     verify = format!(
-                        "<button type=\"button\" class=\"vireo-verify\" data-key=\"{aid}:{id}\" \
+                        "<button type=\"button\" class=\"hylki-verify\" data-key=\"{aid}:{id}\" \
                          title=\"\">{svg}</button>\
-                         <button type=\"button\" class=\"vireo-pgp\" data-key=\"{aid}:{id}\" \
-                         title=\"\">{lock}{sig}<span class=\"vireo-pgp-text\"></span></button>\
-                         <span class=\"vireo-sens\" data-key=\"{aid}:{id}\" title=\"\">{sens}\
-                         <span class=\"vireo-sens-text\"></span></span>",
+                         <button type=\"button\" class=\"hylki-pgp\" data-key=\"{aid}:{id}\" \
+                         title=\"\">{lock}{sig}<span class=\"hylki-pgp-text\"></span></button>\
+                         <span class=\"hylki-sens\" data-key=\"{aid}:{id}\" title=\"\">{sens}\
+                         <span class=\"hylki-sens-text\"></span></span>",
                         aid = m.account_id,
                         id = m.id,
                         svg = inline_icon_svg("verified-checkmark-symbolic"),
@@ -4485,7 +4584,7 @@ impl MessageView {
                         // attacker-controlled address can't smuggle markup
                         // through the attributes.
                         format!(
-                            "<span class=\"vireo-addr vireo-mail\" data-mail=\"{0}\" \
+                            "<span class=\"hylki-addr hylki-mail\" data-mail=\"{0}\" \
                              data-addr=\"&lt;{0}&gt;\">&lt;{0}&gt;</span>",
                             escape_text(&m.from_addr).replace('"', "&quot;")
                         )
@@ -4500,7 +4599,7 @@ impl MessageView {
                         // single-recipient chip would only repeat it (#40).
                         1 if always_show_recipients => String::new(),
                         n => format!(
-                            "<button type=\"button\" class=\"vireo-rcpt-toggle{open}\" \
+                            "<button type=\"button\" class=\"hylki-rcpt-toggle{open}\" \
                              title=\"{title}\">{label}</button>",
                             label = gtk::glib::markup_escape_text(&ni18n_f(
                                 "{n} recipient",
@@ -4521,7 +4620,7 @@ impl MessageView {
                     // folder on screen — the reply you sent, pulled in from Sent.
                     folder = match folder_labels.get(&(m.account_id, m.id)) {
                         Some(label) => format!(
-                            "<span class=\"vireo-folder\">{}</span>",
+                            "<span class=\"hylki-folder\">{}</span>",
                             escape_text(label)
                         ),
                         None => String::new(),
@@ -4531,7 +4630,7 @@ impl MessageView {
                     // clears when the user clicks the card to read it —
                     // scrolling past no longer counts as reading.
                     dot = if m.unread {
-                        format!("<span class=\"vireo-dot\" data-key=\"{}:{}\"></span>", m.account_id, m.id)
+                        format!("<span class=\"hylki-dot\" data-key=\"{}:{}\"></span>", m.account_id, m.id)
                     } else {
                         String::new()
                     },
@@ -4568,7 +4667,7 @@ impl MessageView {
             bg.clone()
         };
         let page = if carded { deep } else { single_ground };
-        let body_class = if carded { " class=\"vireo-conv\"" } else { "" };
+        let body_class = if carded { " class=\"hylki-conv\"" } else { "" };
         // Defence in depth for the wrapper: the only script allowed to run is the
         // one carrying this render's nonce, which is ours. Anything a message
         // manages to smuggle into this document — an injected `<script>`, an
@@ -4614,8 +4713,8 @@ impl MessageView {
             !carded && thread.len() == 1 && (reader || !paints_own_background(&thread[0].body));
         let plain_css = if single_plain {
             format!(
-                "body:not(.vireo-conv) .vireo-msg,\
-                 body:not(.vireo-conv) iframe.vireo-frame{{background:{chrome};}}"
+                "body:not(.hylki-conv) .hylki-msg,\
+                 body:not(.hylki-conv) iframe.hylki-frame{{background:{chrome};}}"
             )
         } else {
             String::new()
@@ -4630,49 +4729,49 @@ impl MessageView {
              <style>\
                :root{{color-scheme:{scheme};}}\
                body{{margin:0;padding:0;background:{page};font:14px/1.55 system-ui,sans-serif;}}\
-               body.vireo-conv{{padding:14px;}}\
-               iframe.vireo-frame{{width:100%;border:0;display:block;background:{bg};\
+               body.hylki-conv{{padding:14px;}}\
+               iframe.hylki-frame{{width:100%;border:0;display:block;background:{bg};\
                  visibility:hidden;}}\
-               iframe.vireo-frame.vireo-live{{visibility:visible;}}\
-               .vireo-pan{{overflow-x:auto;position:relative;}}\
-               iframe.vireo-frame.anim{{transition:height 240ms cubic-bezier(0.4,0,0.2,1);}}\
-               @media (prefers-reduced-motion:reduce){{iframe.vireo-frame.anim{{transition:none;}}}}\
-               .vireo-msg{{background:{bg};\
+               iframe.hylki-frame.hylki-live{{visibility:visible;}}\
+               .hylki-pan{{overflow-x:auto;position:relative;}}\
+               iframe.hylki-frame.anim{{transition:height 240ms cubic-bezier(0.4,0,0.2,1);}}\
+               @media (prefers-reduced-motion:reduce){{iframe.hylki-frame.anim{{transition:none;}}}}\
+               .hylki-msg{{background:{bg};\
                  border-radius:12px;overflow:hidden;margin:0 0 14px;}}\
-               .vireo-msg:last-child{{margin-bottom:0;}}\
-               .vireo-msg{{user-select:none;}}\
-               body:not(.vireo-conv) .vireo-msg{{border-radius:0;margin:0;}}\
-               .vireo-msg.selected{{box-shadow:0 0 0 2px {accent};}}\
-               .vireo-fbar{{display:none;}}\
-               .vireo-msg.vireo-folded>.vireo-fbar{{display:flex;align-items:flex-start;gap:12px;\
+               .hylki-msg:last-child{{margin-bottom:0;}}\
+               .hylki-msg{{user-select:none;}}\
+               body:not(.hylki-conv) .hylki-msg{{border-radius:0;margin:0;}}\
+               .hylki-msg.selected{{box-shadow:0 0 0 2px {accent};}}\
+               .hylki-fbar{{display:none;}}\
+               .hylki-msg.hylki-folded>.hylki-fbar{{display:flex;align-items:flex-start;gap:12px;\
                  padding:14px 18px;cursor:pointer;user-select:none;}}\
-               .vireo-fbar-main{{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}}\
-               .vireo-fbar-top{{display:flex;align-items:center;gap:12px;min-height:26px;}}\
-               .vireo-fbar>.vireo-ava{{align-self:flex-start;}}\
-               .vireo-fbar-prev{{display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;\
+               .hylki-fbar-main{{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}}\
+               .hylki-fbar-top{{display:flex;align-items:center;gap:12px;min-height:26px;}}\
+               .hylki-fbar>.hylki-ava{{align-self:flex-start;}}\
+               .hylki-fbar-prev{{display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;\
                  opacity:0.6;font-size:0.92em;line-height:1.35;overflow-wrap:anywhere;}}\
-               .vireo-fbar-from{{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;\
+               .hylki-fbar-from{{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;\
                  white-space:nowrap;opacity:0.85;}}\
-               .vireo-msg.unread .vireo-fbar-from{{font-weight:700;opacity:1;}}\
-               .vireo-fbar-ico{{flex:none;display:inline-flex;opacity:0.55;line-height:0;}}\
-               .vireo-fbar-ico svg{{width:16px;height:16px;}}\
-               .vireo-fbar-none{{width:16px;height:16px;}}\
-               .vireo-fbar-ico svg,.vireo-fbar-ico svg *{{fill:currentColor;}}\
-               .vireo-fbar-date{{flex:none;min-width:6.5em;text-align:end;opacity:0.7;\
+               .hylki-msg.unread .hylki-fbar-from{{font-weight:700;opacity:1;}}\
+               .hylki-fbar-ico{{flex:none;display:inline-flex;opacity:0.55;line-height:0;}}\
+               .hylki-fbar-ico svg{{width:16px;height:16px;}}\
+               .hylki-fbar-none{{width:16px;height:16px;}}\
+               .hylki-fbar-ico svg,.hylki-fbar-ico svg *{{fill:currentColor;}}\
+               .hylki-fbar-date{{flex:none;min-width:6.5em;text-align:end;opacity:0.7;\
                  font-size:0.92em;white-space:nowrap;}}\
-               .vireo-msg.vireo-folded>:not(.vireo-fbar){{display:none;}}\
-               body.vireo-folds .vireo-msg-hdr{{cursor:pointer;}}\
-               @media print{{.vireo-msg.vireo-folded>:not(.vireo-fbar){{display:revert !important;}}\
-                 .vireo-msg.vireo-folded>.vireo-fbar{{display:none !important;}}}}\
-               .vireo-msg-hdr{{cursor:pointer;}}\
-               .vireo-msg-hdr{{padding:12px 16px;cursor:default;user-select:none;\
+               .hylki-msg.hylki-folded>:not(.hylki-fbar){{display:none;}}\
+               body.hylki-folds .hylki-msg-hdr{{cursor:pointer;}}\
+               @media print{{.hylki-msg.hylki-folded>:not(.hylki-fbar){{display:revert !important;}}\
+                 .hylki-msg.hylki-folded>.hylki-fbar{{display:none !important;}}}}\
+               .hylki-msg-hdr{{cursor:pointer;}}\
+               .hylki-msg-hdr{{padding:12px 16px;cursor:default;user-select:none;\
                  position:sticky;top:0;z-index:1;background-color:{bg};}}\
                /* 8px between items on a line, but only 2px between wrapped\
                   lines — the flex gap otherwise pads rows apart too. */\
-               .vireo-hdr-line{{display:flex;column-gap:8px;row-gap:2px;\
+               .hylki-hdr-line{{display:flex;column-gap:8px;row-gap:2px;\
                  align-items:baseline;flex-wrap:nowrap;\
                  min-width:0;position:relative;}}\
-               .vireo-hdr-meta{{display:flex;gap:8px;align-items:baseline;flex:none;\
+               .hylki-hdr-meta{{display:flex;gap:8px;align-items:baseline;flex:none;\
                  margin-inline-start:auto;}}\
                /* Narrow pane: the meta group (folder chip, recipients chip, date)\
                   drops to its own line as one unit — no mid-text wrapping — while\
@@ -4681,21 +4780,21 @@ impl MessageView {
                  /* Tighten the right-hand insets (card gutter + header padding)\
                     so the palette toggle sits nearer the pane's edge — but the\
                     combined inset never drops below 20px. */\
-                 body.vireo-conv{{padding:10px;}}\
-                 body.vireo-conv .vireo-msg-hdr{{padding:12px 10px;}}\
-                 .vireo-hdr-line{{flex-wrap:wrap;}}\
-                 .vireo-hdr-meta{{order:10;flex-basis:100%;margin-inline-start:34px;\
+                 body.hylki-conv{{padding:10px;}}\
+                 body.hylki-conv .hylki-msg-hdr{{padding:12px 10px;}}\
+                 .hylki-hdr-line{{flex-wrap:wrap;}}\
+                 .hylki-hdr-meta{{order:10;flex-basis:100%;margin-inline-start:34px;\
                    justify-content:flex-start;}}\
                  /* Below the wrapped meta line the recipients need a touch\
                     more air than the wide layout's 2px. */\
-                 .vireo-rcpt{{margin-top:6px;}}\
+                 .hylki-rcpt{{margin-top:6px;}}\
                  /* With the meta group gone from the first line, the palette\
                     pins itself to the corner (the \u{22ef} is already absolute). */\
-                 body:not([data-vireo-acts=\"toggle\"]) .vireo-acts{{margin-inline-start:auto;}}\
+                 body:not([data-hylki-acts=\"toggle\"]) .hylki-acts{{margin-inline-start:auto;}}\
                }}\
-               body:not(.vireo-conv) .vireo-msg-hdr{{background-color:{chrome};}}\
+               body:not(.hylki-conv) .hylki-msg-hdr{{background-color:{chrome};}}\
                {plain_css}\
-               .vireo-ava{{width:26px;height:26px;border-radius:50%;flex:none;align-self:center;\
+               .hylki-ava{{width:26px;height:26px;border-radius:50%;flex:none;align-self:center;\
                  display:flex;align-items:center;justify-content:center;color:#fff;\
                  font-size:0.8em;font-weight:700;}}\
                /* Zero flex-basis: the name and address only absorb free space\
@@ -4703,104 +4802,104 @@ impl MessageView {
                   the palette onto another line. Under pressure the address\
                   gives way first (tiny grow share), fading out at its right\
                   edge; the name ellipsizes only after that. */\
-               .vireo-from{{font-weight:700;flex:99 1 0;max-width:max-content;min-width:0;\
+               .hylki-from{{font-weight:700;flex:99 1 0;max-width:max-content;min-width:0;\
                  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}\
-               .vireo-tags{{display:inline-flex;gap:4px;align-items:center;flex:0 0 auto;}}\
-               .vireo-tags:empty{{display:none;}}\
+               .hylki-tags{{display:inline-flex;gap:4px;align-items:center;flex:0 0 auto;}}\
+               .hylki-tags:empty{{display:none;}}\
                /* A card's own attachments (#213): chips beneath the body. */\
-               .vireo-atts{{display:flex;flex-wrap:wrap;gap:6px;padding:2px 14px 12px;}}\
-               .vireo-atts:empty{{display:none;}}\
+               .hylki-atts{{display:flex;flex-wrap:wrap;gap:6px;padding:2px 14px 12px;}}\
+               .hylki-atts:empty{{display:none;}}\
                /* The Unsubscribe banner between a list message's header and\
                   body: a line of text and one button. */\
-               .vireo-tr{{display:flex;align-items:center;gap:10px;padding:8px 14px 9px;\
+               .hylki-tr{{display:flex;align-items:center;gap:10px;padding:8px 14px 9px;\
                  font-size:0.9em;border-bottom:1px solid rgba(128,128,128,0.25);}}\
-               .vireo-tr:empty{{display:none;}}\
-               .vireo-tr-text{{flex:1 1 auto;min-width:0;opacity:0.8;}}\
-               .vireo-tr-btn{{flex:none;border:none;border-radius:6px;\
+               .hylki-tr:empty{{display:none;}}\
+               .hylki-tr-text{{flex:1 1 auto;min-width:0;opacity:0.8;}}\
+               .hylki-tr-btn{{flex:none;border:none;border-radius:6px;\
                  padding:3px 12px;background:color-mix(in srgb,currentColor 10%,transparent);\
                  color:inherit;font:inherit;font-size:0.95em;font-weight:600;cursor:pointer;}}\
-               .vireo-tr-btn:hover{{background:color-mix(in srgb,currentColor 15%,transparent);}}\
-               .vireo-tr-btn:active{{background:color-mix(in srgb,currentColor 30%,transparent);}}\
-               .vireo-unsub{{display:flex;align-items:center;gap:10px;padding:8px 14px 9px;\
+               .hylki-tr-btn:hover{{background:color-mix(in srgb,currentColor 15%,transparent);}}\
+               .hylki-tr-btn:active{{background:color-mix(in srgb,currentColor 30%,transparent);}}\
+               .hylki-unsub{{display:flex;align-items:center;gap:10px;padding:8px 14px 9px;\
                  font-size:0.9em;border-bottom:1px solid rgba(128,128,128,0.25);}}\
-               .vireo-unsub:empty{{display:none;}}\
-               .vireo-unsub-text{{flex:1 1 auto;min-width:0;opacity:0.8;}}\
-               .vireo-unsub-btn{{flex:none;border:none;border-radius:6px;\
+               .hylki-unsub:empty{{display:none;}}\
+               .hylki-unsub-text{{flex:1 1 auto;min-width:0;opacity:0.8;}}\
+               .hylki-unsub-btn{{flex:none;border:none;border-radius:6px;\
                  padding:3px 12px;background:color-mix(in srgb,currentColor 10%,transparent);\
                  color:inherit;font:inherit;font-size:0.95em;font-weight:600;cursor:pointer;}}\
-               .vireo-unsub-btn:hover{{background:color-mix(in srgb,currentColor 15%,transparent);}}\
-               .vireo-unsub-btn:active{{background:color-mix(in srgb,currentColor 30%,transparent);}}\
+               .hylki-unsub-btn:hover{{background:color-mix(in srgb,currentColor 15%,transparent);}}\
+               .hylki-unsub-btn:active{{background:color-mix(in srgb,currentColor 30%,transparent);}}\
                /* The invitation banner (#223): the meeting at the top of\
                   the card, and the answer buttons under it. */\
-               .vireo-inv{{display:flex;gap:10px;padding:10px 14px 11px;font-size:0.9em;\
+               .hylki-inv{{display:flex;gap:10px;padding:10px 14px 11px;font-size:0.9em;\
                  border-bottom:1px solid rgba(128,128,128,0.25);}}\
-               .vireo-inv:empty{{display:none;}}\
-               .vireo-inv-icon{{flex:none;padding-top:1px;opacity:0.7;}}\
-               .vireo-inv-icon svg{{width:20px;height:20px;display:block;}}\
-               .vireo-inv-icon svg,.vireo-inv-icon svg *{{fill:currentColor;}}\
-               .vireo-inv-body{{flex:1 1 auto;min-width:0;}}\
-               .vireo-inv-head{{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;}}\
-               .vireo-inv-title{{font-weight:700;font-size:1.05em;}}\
-               .vireo-inv-title.off{{text-decoration:line-through;opacity:0.7;}}\
-               .vireo-inv-kind{{font-size:0.85em;text-transform:uppercase;\
+               .hylki-inv:empty{{display:none;}}\
+               .hylki-inv-icon{{flex:none;padding-top:1px;opacity:0.7;}}\
+               .hylki-inv-icon svg{{width:20px;height:20px;display:block;}}\
+               .hylki-inv-icon svg,.hylki-inv-icon svg *{{fill:currentColor;}}\
+               .hylki-inv-body{{flex:1 1 auto;min-width:0;}}\
+               .hylki-inv-head{{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;}}\
+               .hylki-inv-title{{font-weight:700;font-size:1.05em;}}\
+               .hylki-inv-title.off{{text-decoration:line-through;opacity:0.7;}}\
+               .hylki-inv-kind{{font-size:0.85em;text-transform:uppercase;\
                  letter-spacing:0.04em;opacity:0.6;}}\
-               .vireo-inv-row{{opacity:0.8;margin-top:2px;}}\
-               .vireo-inv-note{{margin-top:4px;opacity:0.8;font-style:italic;}}\
-               .vireo-inv-acts{{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}}\
-               .vireo-inv-btn{{border:1px solid rgba(128,128,128,0.4);border-radius:6px;\
+               .hylki-inv-row{{opacity:0.8;margin-top:2px;}}\
+               .hylki-inv-note{{margin-top:4px;opacity:0.8;font-style:italic;}}\
+               .hylki-inv-acts{{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}}\
+               .hylki-inv-btn{{border:1px solid rgba(128,128,128,0.4);border-radius:6px;\
                  padding:3px 12px;background:rgba(128,128,128,0.1);color:inherit;font:inherit;\
                  font-size:0.95em;font-weight:600;cursor:pointer;}}\
-               .vireo-inv-btn:hover{{background:rgba(128,128,128,0.22);}}\
+               .hylki-inv-btn:hover{{background:rgba(128,128,128,0.22);}}\
                /* The answer already given is marked, so a meeting opened\
                   again shows where it stands at a glance. */\
-               .vireo-inv-btn.on{{border-color:{accent};color:{accent};\
+               .hylki-inv-btn.on{{border-color:{accent};color:{accent};\
                  background:color-mix(in srgb, {accent} 16%, transparent);}}\
-               .vireo-attw{{display:inline-flex;align-items:stretch;max-width:100%;\
+               .hylki-attw{{display:inline-flex;align-items:stretch;max-width:100%;\
                  border:1px solid rgba(128,128,128,0.35);border-radius:8px;overflow:hidden;\
                  background:rgba(128,128,128,0.08);}}\
-               .vireo-attc{{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;\
+               .hylki-attc{{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;\
                  border:none;background:none;color:inherit;font:inherit;font-size:0.85em;\
                  cursor:pointer;min-width:0;max-width:320px;}}\
-               .vireo-attc:hover{{background:rgba(128,128,128,0.18);}}\
-               .vireo-attc svg{{width:16px;height:16px;flex:none;display:block;}}\
-               .vireo-attc svg,.vireo-attc svg *{{fill:currentColor;}}\
-               .vireo-attc.ftype-pdf svg{{color:#e01b24;}}\
-               .vireo-attc.ftype-doc svg{{color:#3584e4;}}\
-               .vireo-attc.ftype-sheet svg{{color:#2ec27e;}}\
-               .vireo-attc.ftype-slides svg{{color:#ff7800;}}\
-               .vireo-attc.ftype-archive svg{{color:#e5a50a;}}\
-               .vireo-attc.ftype-audio svg{{color:#9141ac;}}\
-               .vireo-attc.ftype-video svg{{color:#e6689e;}}\
-               .vireo-attc.ftype-calendar svg{{color:#009e8f;}}\
-               .vireo-attc.ftype-image svg{{color:#1c9bd8;}}\
-               .vireo-attc.ftype-generic svg{{color:#8c8c8c;}}\
-               .vireo-attn{{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}}\
-               .vireo-attz{{opacity:0.55;white-space:nowrap;flex:none;}}\
-               .vireo-attsave{{display:inline-flex;align-items:center;padding:0 7px;border:none;\
+               .hylki-attc:hover{{background:rgba(128,128,128,0.18);}}\
+               .hylki-attc svg{{width:16px;height:16px;flex:none;display:block;}}\
+               .hylki-attc svg,.hylki-attc svg *{{fill:currentColor;}}\
+               .hylki-attc.ftype-pdf svg{{color:#e01b24;}}\
+               .hylki-attc.ftype-doc svg{{color:#3584e4;}}\
+               .hylki-attc.ftype-sheet svg{{color:#2ec27e;}}\
+               .hylki-attc.ftype-slides svg{{color:#ff7800;}}\
+               .hylki-attc.ftype-archive svg{{color:#e5a50a;}}\
+               .hylki-attc.ftype-audio svg{{color:#9141ac;}}\
+               .hylki-attc.ftype-video svg{{color:#e6689e;}}\
+               .hylki-attc.ftype-calendar svg{{color:#009e8f;}}\
+               .hylki-attc.ftype-image svg{{color:#1c9bd8;}}\
+               .hylki-attc.ftype-generic svg{{color:#8c8c8c;}}\
+               .hylki-attn{{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}}\
+               .hylki-attz{{opacity:0.55;white-space:nowrap;flex:none;}}\
+               .hylki-attsave{{display:inline-flex;align-items:center;padding:0 7px;border:none;\
                  border-inline-start:1px solid rgba(128,128,128,0.35);background:none;color:inherit;\
                  cursor:pointer;opacity:0.6;}}\
-               .vireo-attsave:hover{{opacity:1;background:rgba(128,128,128,0.18);}}\
-               .vireo-attsave svg{{width:14px;height:14px;display:block;}}\
-               .vireo-attsave svg,.vireo-attsave svg *{{fill:currentColor;}}\
-               .vireo-atts.flash .vireo-attw{{animation:vireo-att-flash 1.2s ease-out;}}\
-               @keyframes vireo-att-flash{{0%,40%{{box-shadow:0 0 0 3px rgba(53,132,228,0.7);}}\
+               .hylki-attsave:hover{{opacity:1;background:rgba(128,128,128,0.18);}}\
+               .hylki-attsave svg{{width:14px;height:14px;display:block;}}\
+               .hylki-attsave svg,.hylki-attsave svg *{{fill:currentColor;}}\
+               .hylki-atts.flash .hylki-attw{{animation:hylki-att-flash 1.2s ease-out;}}\
+               @keyframes hylki-att-flash{{0%,40%{{box-shadow:0 0 0 3px rgba(53,132,228,0.7);}}\
                  100%{{box-shadow:0 0 0 3px rgba(53,132,228,0);}}}}\
-               .vireo-tag{{font-size:0.72em;font-weight:700;line-height:1.4;padding:1px 7px;\
+               .hylki-tag{{font-size:0.72em;font-weight:700;line-height:1.4;padding:1px 7px;\
                  border-radius:9999px;white-space:nowrap;}}\
-               .vireo-label{{background:rgba(128,128,128,0.2);color:inherit;max-width:16em;\
+               .hylki-label{{max-width:16em;\
                  overflow:hidden;text-overflow:ellipsis;}}\
-               .vireo-addr{{opacity:0.55;font-size:0.9em;flex:1 1 0;max-width:max-content;\
+               .hylki-addr{{opacity:0.55;font-size:0.9em;flex:1 1 0;max-width:max-content;\
                  min-width:0;white-space:nowrap;overflow:hidden;text-overflow:clip;\
                  position:relative;}}\
                /* The fade exists only while something actually collides with\
                   the address (`clipped` is set by measurement, below). */\
-               .vireo-addr.clipped{{\
+               .hylki-addr.clipped{{\
                  -webkit-mask-image:linear-gradient(to right,#000 calc(100% - 18px),transparent);\
                  mask-image:linear-gradient(to right,#000 calc(100% - 18px),transparent);}}\
                /* Hovering a clipped address reveals it in full: an overlay\
                   pinned to the span's spot, floating over whatever crowded it\
                   out, gone when the cursor leaves. */\
-               .vireo-addr.clipped:hover{{-webkit-mask-image:none;mask-image:none;\
+               .hylki-addr.clipped:hover{{-webkit-mask-image:none;mask-image:none;\
                  z-index:6;}}\
                /* Addresses act as links: click composes to them, right-click\
                   offers Copy / New Message. */\
@@ -4813,180 +4912,180 @@ impl MessageView {
                   baseline before they apply) — a fixed centred pixel box sat\
                   visibly low whenever a GNOME text scaling factor shrank the\
                   type around it. */\
-               .vireo-verify{{display:none;background:none;border:none;\
+               .hylki-verify{{display:none;background:none;border:none;\
                  padding:0 2px;margin-inline-start:2px;cursor:pointer;line-height:0;\
                  align-self:baseline;transform:translateY(0.18em);flex:none;}}\
-               .vireo-verify.on{{display:inline-flex;}}\
-               .vireo-verify svg{{width:0.95em;height:0.95em;display:block;}}\
-               .vireo-verify svg,.vireo-verify svg *{{fill:currentColor;}}\
-               .vireo-verify.trust-pass{{color:#3584e4;}}\
-               .vireo-verify.trust-unverified{{color:currentColor;opacity:0.4;}}\
-               .vireo-verify.trust-suspicious{{color:#cd9309;}}\
-               .vireo-verify.trust-fail{{color:#c01c28;}}\
+               .hylki-verify.on{{display:inline-flex;}}\
+               .hylki-verify svg{{width:0.95em;height:0.95em;display:block;}}\
+               .hylki-verify svg,.hylki-verify svg *{{fill:currentColor;}}\
+               .hylki-verify.trust-pass{{color:#3584e4;}}\
+               .hylki-verify.trust-unverified{{color:currentColor;opacity:0.4;}}\
+               .hylki-verify.trust-suspicious{{color:#cd9309;}}\
+               .hylki-verify.trust-fail{{color:#c01c28;}}\
                /* The OpenPGP chip (#133), a labelled pill since #300: the\
                   verdict reads in words on a wash of its color. Text of its\
                   own, so it sits on the name's baseline without the seal's\
                   nudge. */\
-               .vireo-pgp{{display:none;font:inherit;font-size:0.78em;font-weight:600;\
+               .hylki-pgp{{display:none;font:inherit;font-size:0.78em;font-weight:600;\
                  border:none;border-radius:999px;padding-block:0.1em;padding-inline:0.45em 0.6em;\
                  margin-inline-start:4px;cursor:pointer;align-items:center;gap:0.3em;\
                  align-self:baseline;white-space:nowrap;flex:none;color:inherit;\
                  background:rgba(128,128,128,0.16);}}\
-               .vireo-pgp.on{{display:inline-flex;}}\
-               .vireo-pgp svg{{width:1.1em;height:1.1em;display:none;flex:none;}}\
-               .vireo-pgp svg,.vireo-pgp svg *{{fill:currentColor;}}\
-               .vireo-pgp.enc svg:first-child{{display:block;}}\
-               .vireo-pgp.sig svg:nth-child(2){{display:block;}}\
-               .vireo-pgp.pgp-good{{color:#26a269;background:rgba(38,162,105,0.16);}}\
-               .vireo-pgp.pgp-warn{{color:#cd9309;background:rgba(205,147,9,0.16);}}\
-               .vireo-pgp.pgp-bad{{color:#c01c28;background:rgba(192,28,40,0.14);}}\
-               .vireo-pgp:hover{{filter:brightness(1.1);}}\
+               .hylki-pgp.on{{display:inline-flex;}}\
+               .hylki-pgp svg{{width:1.1em;height:1.1em;display:none;flex:none;}}\
+               .hylki-pgp svg,.hylki-pgp svg *{{fill:currentColor;}}\
+               .hylki-pgp.enc svg:first-child{{display:block;}}\
+               .hylki-pgp.sig svg:nth-child(2){{display:block;}}\
+               .hylki-pgp.pgp-good{{color:#26a269;background:rgba(38,162,105,0.16);}}\
+               .hylki-pgp.pgp-warn{{color:#cd9309;background:rgba(205,147,9,0.16);}}\
+               .hylki-pgp.pgp-bad{{color:#c01c28;background:rgba(192,28,40,0.14);}}\
+               .hylki-pgp:hover{{filter:brightness(1.1);}}\
                /* The sensitivity label (#411): the OpenPGP pill's shape in a\
                   neutral wash, since a label is a statement, not a verdict.\
                   Zero flex-basis and a small share, like the address: the\
                   name fills first and a long label ellipsizes before it. */\
-               .vireo-sens{{display:none;font-size:0.78em;font-weight:600;\
+               .hylki-sens{{display:none;font-size:0.78em;font-weight:600;\
                  border-radius:999px;padding-block:0.1em;padding-inline:0.45em 0.6em;\
                  margin-inline-start:4px;align-items:center;gap:0.3em;\
                  align-self:baseline;white-space:nowrap;flex:1 1 0;min-width:3.5em;max-width:max-content;\
                  background:rgba(128,128,128,0.16);cursor:default;}}\
-               .vireo-sens.on{{display:inline-flex;}}\
-               .vireo-sens svg{{width:1em;height:1em;flex:none;}}\
-               .vireo-sens svg,.vireo-sens svg *{{fill:currentColor;}}\
-               .vireo-sens-text{{overflow:hidden;text-overflow:ellipsis;}}\
+               .hylki-sens.on{{display:inline-flex;}}\
+               .hylki-sens svg{{width:1em;height:1em;flex:none;}}\
+               .hylki-sens svg,.hylki-sens svg *{{fill:var(--hylki-sens,currentColor);}}\
+               .hylki-sens-text{{overflow:hidden;text-overflow:ellipsis;}}\
                /* The icons alone (Settings, #300): the chip as it was before\
                   it had words, sitting on the name's line like the seal. */\
-               body[data-vireo-pgpicons] .vireo-pgp{{background:none;padding:0 2px;\
+               body[data-hylki-pgpicons] .hylki-pgp{{background:none;padding:0 2px;\
                  margin-inline-start:2px;gap:1px;font-size:inherit;line-height:0;\
                  transform:translateY(0.18em);}}\
-               body[data-vireo-pgpicons] .vireo-pgp svg{{width:0.95em;height:0.95em;}}\
-               body[data-vireo-pgpicons] .vireo-pgp-text{{display:none;}}\
-               .vireo-mail{{cursor:pointer;}}\
-               .vireo-mail:hover{{text-decoration:underline;}}\
+               body[data-hylki-pgpicons] .hylki-pgp svg{{width:0.95em;height:0.95em;}}\
+               body[data-hylki-pgpicons] .hylki-pgp-text{{display:none;}}\
+               .hylki-mail{{cursor:pointer;}}\
+               .hylki-mail:hover{{text-decoration:underline;}}\
                /* Styled after the app's own context menus (context_menu.rs +\
                   .context-menu-list in styles.css): same padding, min width,\
                   row shape and weight, so both menu families read as one. */\
-               .vireo-mailmenu-scrim{{position:fixed;left:0;top:0;right:0;bottom:0;\
+               .hylki-mailmenu-scrim{{position:fixed;left:0;top:0;right:0;bottom:0;\
                  z-index:98;}}\
-               .vireo-mailmenu{{position:fixed;z-index:99;background:{bg};\
+               .hylki-mailmenu{{position:fixed;z-index:99;background:{bg};\
                  border:1px solid rgba(128,128,128,0.2);border-radius:12px;\
                  box-shadow:0 6px 24px rgba(0,0,0,0.22);padding:6px;\
                  min-width:190px;font-size:0.95em;}}\
-               .vireo-mailmenu button{{display:block;width:100%;text-align:start;\
+               .hylki-mailmenu button{{display:block;width:100%;text-align:start;\
                  background:none;border:none;padding:8px 10px;border-radius:6px;\
                  color:inherit;cursor:pointer;font:inherit;font-weight:normal;}}\
-               .vireo-mailmenu button:hover{{background:rgba(128,128,128,0.14);}}\
-               .vireo-addr.clipped:hover::after{{content:attr(data-addr);\
+               .hylki-mailmenu button:hover{{background:rgba(128,128,128,0.14);}}\
+               .hylki-addr.clipped:hover::after{{content:attr(data-addr);\
                  position:absolute;inset-inline-start:-6px;top:50%;transform:translateY(-50%);\
                  background:{bg};border-radius:6px;padding:1px 6px;\
                  white-space:nowrap;text-decoration:underline;}}\
-               body:not(.vireo-conv) .vireo-addr.clipped:hover::after{{\
+               body:not(.hylki-conv) .hylki-addr.clipped:hover::after{{\
                  background:{chrome};}}\
-               .vireo-date{{opacity:0.55;font-size:0.85em;flex:none;white-space:nowrap;}}\
-               .vireo-dot{{width:8px;height:8px;border-radius:50%;background:#3584e4;\
+               .hylki-date{{opacity:0.55;font-size:0.85em;flex:none;white-space:nowrap;}}\
+               .hylki-dot{{width:8px;height:8px;border-radius:50%;background:#3584e4;\
                  flex:none;align-self:center;}}\
-               .vireo-end{{height:1px;}}\
-               .vireo-quote{{display:block;margin:0 16px 12px;padding:0 7px;\
+               .hylki-end{{height:1px;}}\
+               .hylki-quote{{display:block;margin:0 16px 12px;padding:0 7px;\
                  font:inherit;font-size:0.7em;line-height:1.45;letter-spacing:0.06em;\
                  color:inherit;opacity:0.6;background:rgba(128,128,128,0.16);\
                  border:0;border-radius:999px;cursor:pointer;}}\
-               .vireo-quote:hover{{opacity:0.95;background:rgba(128,128,128,0.28);}}\
-               .vireo-quote.open{{opacity:0.95;position:absolute;inset-inline-start:0;z-index:2;}}\
-               .vireo-acts{{display:flex;gap:2px;flex:none;align-self:center;margin-inline-start:4px;}}\
+               .hylki-quote:hover{{opacity:0.95;background:rgba(128,128,128,0.28);}}\
+               .hylki-quote.open{{opacity:0.95;position:absolute;inset-inline-start:0;z-index:2;}}\
+               .hylki-acts{{display:flex;gap:2px;flex:none;align-self:center;margin-inline-start:4px;}}\
                /* Read-toggle: the icon showing is the ACTION (read envelope\
                   means mark-as-read); the section's unread class decides. */\
-               .vireo-act .tr-when-unread,.vireo-act .tr-when-read{{display:none;line-height:0;}}\
-               .vireo-msg.unread .vireo-act[data-act=\"toggleread\"] .tr-when-unread{{display:inline-flex;}}\
-               .vireo-msg:not(.unread) .vireo-act[data-act=\"toggleread\"] .tr-when-read{{display:inline-flex;}}\
-               .vireo-act{{color:inherit;background:none;border:none;border-radius:6px;\
+               .hylki-act .tr-when-unread,.hylki-act .tr-when-read{{display:none;line-height:0;}}\
+               .hylki-msg.unread .hylki-act[data-act=\"toggleread\"] .tr-when-unread{{display:inline-flex;}}\
+               .hylki-msg:not(.unread) .hylki-act[data-act=\"toggleread\"] .tr-when-read{{display:inline-flex;}}\
+               .hylki-act{{color:inherit;background:none;border:none;border-radius:6px;\
                  padding:5px 8px;cursor:pointer;opacity:0.7;\
                  display:inline-flex;align-items:center;justify-content:center;\
                  vertical-align:middle;line-height:0;\
                  transition:opacity 120ms ease,background 120ms ease;}}\
-               .vireo-act:hover{{opacity:1;background:rgba(128,128,128,0.18);}}\
-               .vireo-act:active{{background:rgba(128,128,128,0.3);}}\
-               .vireo-act svg{{width:14px;height:14px;display:block;}}\
-               .vireo-act svg,.vireo-act svg *{{fill:currentColor;}}\
+               .hylki-act:hover{{opacity:1;background:rgba(128,128,128,0.18);}}\
+               .hylki-act:active{{background:rgba(128,128,128,0.3);}}\
+               .hylki-act svg{{width:14px;height:14px;display:block;}}\
+               .hylki-act svg,.hylki-act svg *{{fill:currentColor;}}\
                /* A set star: the one state that carries color. */\
-               .vireo-act.on{{color:#e5a50a;opacity:1;}}\
-               .vireo-acts-toggle{{display:none;}}\
+               .hylki-act.on{{color:#e5a50a;opacity:1;}}\
+               .hylki-acts-toggle{{display:none;}}\
                /* Behind-the-\u{22ef} mode: the palette overlays the header line as an\
                   absolute strip anchored at the toggle, expanding leftward over\
                   the text beneath (never pushing it), its left edge fading in\
                   from transparent. The \u{22ef} itself never moves. */\
-               body[data-vireo-acts=\"toggle\"] .vireo-acts{{position:absolute;\
+               body[data-hylki-acts=\"toggle\"] .hylki-acts{{position:absolute;\
                  inset-inline-end:34px;top:13px;transform:translateY(-50%) scaleX(0.6);\
                  transform-origin:right center;margin:0;\
                  padding-block:2px;padding-inline:30px 6px;border-radius:8px;\
                  background:linear-gradient(to right,transparent,{bg} 26px);\
                  opacity:0;pointer-events:none;\
                  transition:opacity 140ms ease,transform 180ms ease;}}\
-               body[data-vireo-acts=\"toggle\"] .vireo-acts.open{{opacity:1;\
+               body[data-hylki-acts=\"toggle\"] .hylki-acts.open{{opacity:1;\
                  pointer-events:auto;transform:translateY(-50%) scaleX(1);}}\
-               body:not(.vireo-conv)[data-vireo-acts=\"toggle\"] .vireo-acts{{\
+               body:not(.hylki-conv)[data-hylki-acts=\"toggle\"] .hylki-acts{{\
                  background:linear-gradient(to right,transparent,{chrome} 26px);}}\
                /* Always visible (not just on card hover), and OUT OF FLOW:\
                   absolutely pinned to the header's right edge, so no amount of\
                   header content can push or wrap it. The line reserves the\
                   button's footprint as fixed right padding instead. */\
-               body[data-vireo-acts=\"toggle\"] .vireo-hdr-line{{padding-inline-end:38px;}}\
+               body[data-hylki-acts=\"toggle\"] .hylki-hdr-line{{padding-inline-end:38px;}}\
                /* Anchored to the FIRST row's centre (the 26px avatar/sender\
                   line), not the line box's — when the meta row wraps beneath,\
                   the box grows downward but the button must not move. */\
-               body[data-vireo-acts=\"toggle\"] .vireo-acts-toggle{{display:block;\
+               body[data-hylki-acts=\"toggle\"] .hylki-acts-toggle{{display:block;\
                  position:absolute;inset-inline-end:0;top:13px;transform:translateY(-50%);\
                  color:{toggle_color};background:none;border:none;border-radius:6px;\
                  padding:4px 8px;margin:0;cursor:pointer;\
                  opacity:0.65;transition:opacity 120ms ease,background 120ms ease;}}\
                /* `svg *` too: the embedded symbolic paths carry their own fill\
                   attribute, which a rule on the svg element alone can't beat. */\
-               .vireo-acts-toggle svg{{width:14px;height:14px;display:block;}}\
-               .vireo-acts-toggle svg,.vireo-acts-toggle svg *{{fill:currentColor;}}\
-               body[data-vireo-acts=\"toggle\"] .vireo-acts-toggle:hover{{opacity:1;\
+               .hylki-acts-toggle svg{{width:14px;height:14px;display:block;}}\
+               .hylki-acts-toggle svg,.hylki-acts-toggle svg *{{fill:currentColor;}}\
+               body[data-hylki-acts=\"toggle\"] .hylki-acts-toggle:hover{{opacity:1;\
                  background:rgba(128,128,128,0.18);}}\
-               body[data-vireo-acts=\"toggle\"] .vireo-acts-toggle.open{{opacity:1;}}\
-               body[data-vireo-acts=\"hover\"] .vireo-acts{{opacity:0;pointer-events:none;\
+               body[data-hylki-acts=\"toggle\"] .hylki-acts-toggle.open{{opacity:1;}}\
+               body[data-hylki-acts=\"hover\"] .hylki-acts{{opacity:0;pointer-events:none;\
                  transition:opacity 300ms ease var(--acts-delay,0ms);}}\
-               body[data-vireo-acts=\"hover\"] .vireo-msg:hover .vireo-acts{{opacity:1;\
+               body[data-hylki-acts=\"hover\"] .hylki-msg:hover .hylki-acts{{opacity:1;\
                  pointer-events:auto;transition:opacity 300ms ease 0ms;}}\
-               .vireo-folder{{padding:0.05em 0.45em;border-radius:0.7em;\
+               .hylki-folder{{padding:0.05em 0.45em;border-radius:0.7em;\
                  font-size:0.78em;opacity:0.75;border:1px solid currentColor;\
                  white-space:nowrap;flex:none;}}\
-               .vireo-rcpt-toggle{{font:inherit;font-size:0.78em;color:inherit;\
+               .hylki-rcpt-toggle{{font:inherit;font-size:0.78em;color:inherit;\
                  background:color-mix(in srgb,currentColor 10%,transparent);\
                  border:none;border-radius:6px;padding:0.15em 0.6em;cursor:pointer;\
                  white-space:nowrap;flex:none;transition:background 120ms ease;}}\
-               .vireo-rcpt-toggle:hover{{background:color-mix(in srgb,currentColor 15%,transparent);}}\
-               .vireo-rcpt-toggle.open{{background:color-mix(in srgb,currentColor 20%,transparent);}}\
+               .hylki-rcpt-toggle:hover{{background:color-mix(in srgb,currentColor 15%,transparent);}}\
+               .hylki-rcpt-toggle.open{{background:color-mix(in srgb,currentColor 20%,transparent);}}\
                /* Indented past the avatar (26px + 8px gap), so the recipients\
                   align with the sender's name — as does the wrapped meta line. */\
-               .vireo-rcpt{{font-size:0.85em;opacity:0.75;\
+               .hylki-rcpt{{font-size:0.85em;opacity:0.75;\
                  user-select:text;overflow-wrap:anywhere;margin:2px 0 0;margin-inline-start:34px;}}\
-               .vireo-rcpt div{{margin-top:2px;}}\
-               .vireo-loading{{opacity:0.5;padding:16px;}}\
+               .hylki-rcpt div{{margin-top:2px;}}\
+               .hylki-loading{{opacity:0.5;padding:16px;}}\
                /* The Copied pill after Ctrl+C: a toast the page draws itself,\
                   since the reader has no toast overlay of its own. */\
-               .vireo-copied{{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(8px);\
+               .hylki-copied{{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(8px);\
                  padding:8px 18px;border-radius:999px;background:rgba(40,40,40,0.92);color:#fff;\
                  font:inherit;font-size:0.9em;box-shadow:0 2px 10px rgba(0,0,0,0.25);\
                  opacity:0;pointer-events:none;transition:opacity 180ms ease,transform 180ms ease;z-index:50;}}\
-               .vireo-copied.on{{opacity:1;transform:translateX(-50%) translateY(0);}}\
+               .hylki-copied.on{{opacity:1;transform:translateX(-50%) translateY(0);}}\
                /* Right to left (#366): what logical properties cannot say. */\
-               html[dir=rtl] .vireo-addr.clipped{{\
+               html[dir=rtl] .hylki-addr.clipped{{\
                  -webkit-mask-image:linear-gradient(to left,#000 calc(100% - 18px),transparent);\
                  mask-image:linear-gradient(to left,#000 calc(100% - 18px),transparent);}}\
-               html[dir=rtl] .vireo-addr.clipped:hover{{-webkit-mask-image:none;mask-image:none;}}\
-               html[dir=rtl] body[data-vireo-acts=\"toggle\"] .vireo-acts{{\
+               html[dir=rtl] .hylki-addr.clipped:hover{{-webkit-mask-image:none;mask-image:none;}}\
+               html[dir=rtl] body[data-hylki-acts=\"toggle\"] .hylki-acts{{\
                  transform-origin:left center;\
                  background:linear-gradient(to left,transparent,{bg} 26px);}}\
-               html[dir=rtl] body:not(.vireo-conv)[data-vireo-acts=\"toggle\"] .vireo-acts{{\
+               html[dir=rtl] body:not(.hylki-conv)[data-hylki-acts=\"toggle\"] .hylki-acts{{\
                  background:linear-gradient(to left,transparent,{chrome} 26px);}}\
                /* Each chip's words in their own direction, as a GTK label\
                   has them: an English 1 recipient in a right-to-left line\
                   otherwise reads recipient 1. */\
-               html[dir=rtl] :is(.vireo-rcpt-toggle,.vireo-date,.vireo-fbar-date,\
-                 .vireo-folder,.vireo-rcpt div){{unicode-bidi:plaintext;}}\
-               html[dir=rtl] .vireo-fbar-date{{text-align:left;}}\
+               html[dir=rtl] :is(.hylki-rcpt-toggle,.hylki-date,.hylki-fbar-date,\
+                 .hylki-folder,.hylki-rcpt div){{unicode-bidi:plaintext;}}\
+               html[dir=rtl] .hylki-fbar-date{{text-align:left;}}\
              </style>{sizer}\
              </head><body{body_class}>{sections}</body></html>"
         )
@@ -5345,7 +5444,7 @@ fn build_webview(role: &'static str) -> webkit6::WebView {
 /// The HYLKI_SHOWCASE_CLICK_LINK probe: find the first web link in any
 /// message frame, say what the top document has at that point (the frame
 /// itself when nothing covers it), and click the link.
-const CLICK_LINK_PROBE: &str = "(function(){var fs=document.querySelectorAll('iframe.vireo-frame');\
+const CLICK_LINK_PROBE: &str = "(function(){var fs=document.querySelectorAll('iframe.hylki-frame');\
 for(var i=0;i<fs.length;i++){var d=fs[i].contentDocument;if(!d)continue;\
 var a=d.querySelector('a[href^=\"http\"]');if(!a)continue;a.scrollIntoView({block:'center'});\
 var fr=fs[i].getBoundingClientRect(),r=a.getBoundingClientRect();\
@@ -5514,7 +5613,7 @@ fn fetch_sender_key(pgp: &crate::models::PgpStatus) -> Result<String, String> {
 fn card_action_button(key: (u32, u32), act: &str, icon: &str, title: &str) -> String {
     let svg = inline_icon_svg(icon);
     format!(
-        "<button type=\"button\" class=\"vireo-act\" data-act=\"{act}\" \
+        "<button type=\"button\" class=\"hylki-act\" data-act=\"{act}\" \
          data-key=\"{aid}:{id}\" title=\"{title}\">{svg}</button>",
         aid = key.0,
         id = key.1,
@@ -5574,7 +5673,7 @@ fn recipients_html(m: &Message, always_shown: bool) -> String {
         if list.is_empty() {
             continue;
         }
-        // Each recipient becomes a `.vireo-mail` span (click composes to it,
+        // Each recipient becomes a `.hylki-mail` span (click composes to it,
         // right-click offers copy/new-message), keyed by its bare address.
         let mut parts = String::new();
         for entry in split_addr_list(list) {
@@ -5591,7 +5690,7 @@ fn recipients_html(m: &Message, always_shown: bool) -> String {
                 parts.push_str(", ");
             }
             parts.push_str(&format!(
-                "<span class=\"vireo-mail\" data-mail=\"{}\">{}</span>",
+                "<span class=\"hylki-mail\" data-mail=\"{}\">{}</span>",
                 escape_text(mail).replace('"', "&quot;"),
                 escape_text(entry)
             ));
@@ -5602,7 +5701,7 @@ fn recipients_html(m: &Message, always_shown: bool) -> String {
         return String::new();
     }
     let hidden = if always_shown { "" } else { " hidden" };
-    format!("<div class=\"vireo-rcpt\"{hidden}>{lines}</div>")
+    format!("<div class=\"hylki-rcpt\"{hidden}>{lines}</div>")
 }
 
 /// Split an address-list header on commas, honouring double-quoted display
@@ -6649,8 +6748,8 @@ fn reader_style_css(style: &crate::config::ReaderStyle, dark: bool, accent: &str
         return String::new();
     }
     // "everything under the scope", at id weight.
-    let all = format!("{scope} :not(#vireo-a):not(#vireo-b):not(#vireo-c)");
-    let of = |sel: &str| format!("{scope} {sel}:not(#vireo-a):not(#vireo-b):not(#vireo-c)");
+    let all = format!("{scope} :not(#hylki-a):not(#hylki-b):not(#hylki-c)");
+    let of = |sel: &str| format!("{scope} {sel}:not(#hylki-a):not(#hylki-b):not(#hylki-c)");
     let mut css = String::new();
     if let Some(font) = &style.font {
         let (family, size, face) = css_font(font);
@@ -6671,16 +6770,16 @@ fn reader_style_css(style: &crate::config::ReaderStyle, dark: bool, accent: &str
             code = of(":is(pre,code,kbd,samp,tt)"),
         ));
     }
-    // Plain-text messages (#181): their parts are wrapped in `.vireo-plain`
+    // Plain-text messages (#181): their parts are wrapped in `.hylki-plain`
     // when the body is rendered, so the fixed-width font lands on exactly
     // them. After the message font above, and one class more specific, so
     // it wins where both apply.
     if let Some(font) = &style.plain_font {
         let (family, size, face) = css_font(font);
         css.push_str(&format!(
-            "{p},{p} :not(#vireo-a):not(#vireo-b):not(#vireo-c)\
+            "{p},{p} :not(#hylki-a):not(#hylki-b):not(#hylki-c)\
              {{font-family:{family} !important;font-size:{size} !important;{face}}}",
-            p = of(".vireo-plain"),
+            p = of(".hylki-plain"),
         ));
     }
     if style.colors {
@@ -6818,9 +6917,9 @@ fn auto_direction(doc: &str) -> String {
         doc.to_string()
     };
     let plain = if crate::app::body_is_pre_wrap(&doc) {
-        "body,.vireo-plain"
-    } else if lower.contains("vireo-plain") {
-        ".vireo-plain"
+        "body,.hylki-plain"
+    } else if lower.contains("hylki-plain") {
+        ".hylki-plain"
     } else {
         return doc;
     };
@@ -6848,7 +6947,7 @@ fn inject_csp(html: &str, allow_remote: bool, dark: bool) -> String {
     // pane whose width grows as the frame is widened, so the widening
     // never quite catches it) swallows the vertical deltas the page
     // needed. The wrapper widens the frame to the content and scrolls it
-    // in `.vireo-pan`; whatever is left over is clipped rather than
+    // in `.hylki-pan`; whatever is left over is clipped rather than
     // scrollable. `scrollWidth`/`scrollHeight` still measure the content.
     // `color-scheme` makes the browser's default colors (for content that sets
     // none of its own) follow the app's light/dark setting; styled emails keep
@@ -6993,7 +7092,7 @@ fn ground_rgba(hex: &str) -> gtk::gdk::RGBA {
 // focus is handed straight back so the next click fires again.
 const SIZE_SCRIPT: &str = "\
 function s(f){if(f._s)return;f._s=1;try{var d=f.contentDocument;if(!d||d.URL==='about:blank')return;\
-f.classList.add('vireo-live');\
+f.classList.add('hylki-live');\
 var b=d.body,e=d.documentElement;\
 var sy=window.scrollY;var _r=f.getBoundingClientRect();\
 var above=_r.bottom<=0;var old=_r.height||0;\
@@ -7016,7 +7115,7 @@ var g=(e.view&&e.view.getSelection)?e.view.getSelection():null;if(g)g.removeAllR
 else{try{var t=(e.view&&e.view.getSelection)?e.view.getSelection():null;\
 if(t&&String(t).length)return;}catch(_){}}\
 try{window.webkit.messageHandlers.hylki.postMessage('sel:'+k+':'+mo);}catch(_){}}\
-var QS='.vireo-quote-attr,.gmail_quote,blockquote:not([style*=\"border: none\"]),#divRplyFwdMsg,.yahoo_quoted';\
+var QS='.hylki-quote-attr,.gmail_quote,blockquote:not([style*=\"border: none\"]),#divRplyFwdMsg,.yahoo_quoted';\
 var SIG='.moz-signature,#Signature,.gmail_signature,[class*=\"signature\"]';\
 var QT=window.vireoQT||['Show quoted text','Hide quoted text'];\
 var WROTE=/(wrote|writes|schrieb|a écrit|escribió|escreveu|scrisse|schreef|skrev|kirjoitti|napisał|napsal|írta|написал|написала|έγραψε)\\s*:?$/i;\
@@ -7041,7 +7140,7 @@ t+='\\n'+c.textContent;}}\
 t=t.replace(/\\u00a0/g,' ').trim();\
 return !t||/^[-_]{2,}[ \\t]*(\\n|$)/.test(t);}\
 function findq(d){\
-var sel=['.vireo-quote-attr','.gmail_quote','blockquote[type=\"cite\"]','#divRplyFwdMsg','.yahoo_quoted'];\
+var sel=['.hylki-quote-attr','.gmail_quote','blockquote[type=\"cite\"]','#divRplyFwdMsg','.yahoo_quoted'];\
 for(var i=0;i<sel.length;i++){var q=d.querySelector(sel[i]);if(q)return [q,i===0||i===3];}\
 var bs=d.querySelectorAll('div[style*=\"border-top\"]');\
 for(var j=0;j<bs.length;j++){var lb=bs[j].querySelectorAll('b,strong'),c=0;\
@@ -7051,7 +7150,7 @@ var w=d.createTreeWalker(d.body,4),n;\
 while((n=w.nextNode())){if(DIV.test(n.textContent)){var pe=n.parentNode;\
 return [pe!==d.body&&pe.textContent.trim()===n.textContent.trim()?pe:n,true];}}\
 q=d.querySelector('blockquote:not([style*=\"border: none\"])');return q?[q,false]:null;}\
-function plain(d){var ps=d.querySelectorAll('.vireo-plain');if(!ps.length)return null;\
+function plain(d){var ps=d.querySelectorAll('.hylki-plain');if(!ps.length)return null;\
 var p=ps[ps.length-1],L=p.textContent.split('\\n'),i=L.length-1,qs=0,st=-1;\
 for(var j=0;j<L.length;j++)if(DIV.test(L[j])){st=j;break;}\
 if(st<0){while(i>=0&&(/^\\s*>/.test(L[i])||!L[i].trim())){if(L[i].trim())qs++;i--;}\
@@ -7091,7 +7190,7 @@ function fold(f,d,box){try{f._q=1;\
 var sp=d.createElement('div');sp.style.cssText='display:none;height:28px;';\
 box.parentNode.insertBefore(sp,box);box.style.display='none';\
 if(!f.parentNode)return;\
-var b=document.createElement('button');b.className='vireo-quote';\
+var b=document.createElement('button');b.className='hylki-quote';\
 b.type='button';b.textContent='\u{2022}\u{2022}\u{2022}';\
 b.setAttribute('title',QT[0]);\
 f.parentNode.insertBefore(b,f.nextSibling);\
@@ -7115,10 +7214,10 @@ window.scrollTo(0,sy);\
 setTimeout(function(){f.classList.remove('anim');s(f);\
 if(on){var br=b.getBoundingClientRect();\
 if(br.top>innerHeight*0.6)window.scrollBy({top:Math.min(br.top-innerHeight*0.3,to-from),behavior:'smooth'});}},280);});}catch(_){}}\
-function foldCard(sec){if(!sec)return;var on=!sec.classList.contains('vireo-folded');\
-sec.classList.toggle('vireo-folded',on);\
+function foldCard(sec){if(!sec)return;var on=!sec.classList.contains('hylki-folded');\
+sec.classList.toggle('hylki-folded',on);\
 try{window.webkit.messageHandlers.hylki.postMessage('fold:'+sec.dataset.key+':'+(on?1:0));}catch(_){}\
-if(!on){var f=sec.querySelector('iframe.vireo-frame');if(f){f._h=0;s(f);setTimeout(function(){s(f);},80);}}}\
+if(!on){var f=sec.querySelector('iframe.hylki-frame');if(f){f._h=0;s(f);setTimeout(function(){s(f);},80);}}}\
 function init(f){quote(f);s(f);try{var d=f.contentDocument;if(d){if(window.ResizeObserver&&d.body){new ResizeObserver(function(){s(f);}).observe(d.body);}\
 if(f.dataset.key&&!f._c){f._c=1;d.addEventListener('click',function(e){\
 if(e.target&&e.target.closest&&e.target.closest('a'))return;pick(f.dataset.key,e);});}\
@@ -7127,23 +7226,23 @@ d.addEventListener(ev,function(){follow=null;hold=null;},{passive:true,capture:t
 d.addEventListener('keydown',selAll,true);d.addEventListener('keydown',copySel,true);}\
 var im=d.images||[];for(var i=0;i<im.length;i++){if(!im[i].complete){im[i].addEventListener('load',function(){s(f);});im[i].addEventListener('error',function(){s(f);});}}}}catch(_){}\
 setTimeout(function(){s(f);},250);setTimeout(function(){s(f);},1000);}\
-function all(){return document.querySelectorAll('iframe.vireo-frame');}\
+function all(){return document.querySelectorAll('iframe.hylki-frame');}\
 document.addEventListener('DOMContentLoaded',function(){\
 var fs=all();var pend=fs.length,rdy=false;\
 function ready(){if(rdy)return;rdy=true;\
 try{window.webkit.messageHandlers.hylki.postMessage('ready:0:0');}catch(_){}\
 var bd=document.body.dataset;\
-if(bd.vireoNoscroll){var a=(bd.vireoAnchor||'').split(':');\
-if(a.length>=3){var el=document.querySelector('.vireo-msg[data-key=\"'+a[0]+':'+a[1]+'\"]');\
+if(bd.hylkiNoscroll){var a=(bd.hylkiAnchor||'').split(':');\
+if(a.length>=3){var el=document.querySelector('.hylki-msg[data-key=\"'+a[0]+':'+a[1]+'\"]');\
 if(el){hold={el:el,off:parseInt(a[2],10)||0,g:a[3]==='g'};\
-if(el.querySelector('.vireo-dot'))follow=el;\
+if(el.querySelector('.hylki-dot'))follow=el;\
 setTimeout(pin,0);}}return;}\
-var ds=document.querySelectorAll('.vireo-msg .vireo-dot');\
+var ds=document.querySelectorAll('.hylki-msg .hylki-dot');\
 var d=ds.length?ds[0]:null;\
-if(d){var m=d.closest('.vireo-msg');\
+if(d){var m=d.closest('.hylki-msg');\
 if(m)setTimeout(function(){try{follow=m;reveal(m);}catch(_){}},0);}\
-else if(bd.vireoNewest){\
-var nm=document.querySelector('.vireo-msg[data-key=\"'+bd.vireoNewest+'\"]');\
+else if(bd.hylkiNewest){\
+var nm=document.querySelector('.hylki-msg[data-key=\"'+bd.hylkiNewest+'\"]');\
 if(nm)setTimeout(function(){try{follow=nm;reveal(nm);}catch(_){}},0);}}\
 setTimeout(markClipped,0);setTimeout(markClipped,400);\
 if(!pend)ready();\
@@ -7152,21 +7251,21 @@ function tick(){if(counted)return;counted=true;if(--pend<=0)ready();}\
 if(f.contentDocument&&f.contentDocument.readyState==='complete'&&f.contentDocument.URL!=='about:blank'){init(f);tick();}\
 f.addEventListener('load',function(){init(f);tick();});})(fs[i]);}\
 setTimeout(ready,450);\
-var hs=document.querySelectorAll('.vireo-msg-hdr');\
+var hs=document.querySelectorAll('.hylki-msg-hdr');\
 for(var j=0;j<hs.length;j++){hs[j].addEventListener('dblclick',function(){\
 try{window.webkit.messageHandlers.hylki.postMessage('open:'+this.dataset.key);}catch(_){}});}\
-if(document.querySelectorAll('.vireo-msg').length>1){document.body.classList.add('vireo-folds');\
+if(document.querySelectorAll('.hylki-msg').length>1){document.body.classList.add('hylki-folds');\
 for(var j=0;j<hs.length;j++){(function(h){var tm=null;\
 h.addEventListener('click',function(e){\
 if(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;\
-if(e.target.closest&&e.target.closest('button,a,.vireo-addr,.vireo-acts,.vireo-tags,.vireo-verify,.vireo-rcpt'))return;\
+if(e.target.closest&&e.target.closest('button,a,.hylki-addr,.hylki-acts,.hylki-tags,.hylki-verify,.hylki-rcpt'))return;\
 if(tm){clearTimeout(tm);tm=null;return;}\
-tm=setTimeout(function(){tm=null;foldCard(h.closest('.vireo-msg'));},260);});})(hs[j]);}\
-var fb=document.querySelectorAll('.vireo-fbar');\
-for(var j=0;j<fb.length;j++){fb[j].addEventListener('click',function(){foldCard(this.closest('.vireo-msg'));});}}\
+tm=setTimeout(function(){tm=null;foldCard(h.closest('.hylki-msg'));},260);});})(hs[j]);}\
+var fb=document.querySelectorAll('.hylki-fbar');\
+for(var j=0;j<fb.length;j++){fb[j].addEventListener('click',function(){foldCard(this.closest('.hylki-msg'));});}}\
 var rbd=document.body.dataset;\
-if(rbd.vireoReadmark&&document.body.classList.contains('vireo-conv')){\
-var rdel=parseInt(rbd.vireoReadmark,10)||250;var rt={};\
+if(rbd.hylkiReadmark&&document.body.classList.contains('hylki-conv')){\
+var rdel=parseInt(rbd.hylkiReadmark,10)||250;var rt={};\
 var rio=new IntersectionObserver(function(es){es.forEach(function(en){\
 var el=en.target,k=el.dataset.key;\
 var vis=en.intersectionRatio>=0.5||en.intersectionRect.height>window.innerHeight*0.6;\
@@ -7175,23 +7274,23 @@ try{window.webkit.messageHandlers.hylki.postMessage('seen:'+k);}catch(_){}\
 rio.unobserve(el);},rdel);}\
 else if(!vis&&rt[k]){clearTimeout(rt[k]);delete rt[k];}\
 });},{threshold:[0,0.25,0.5,0.75,1]});\
-var rsecs=document.querySelectorAll('.vireo-msg');\
-for(var ri=0;ri<rsecs.length;ri++){if(rsecs[ri].querySelector('.vireo-dot'))rio.observe(rsecs[ri]);}}\
+var rsecs=document.querySelectorAll('.hylki-msg');\
+for(var ri=0;ri<rsecs.length;ri++){if(rsecs[ri].querySelector('.hylki-dot'))rio.observe(rsecs[ri]);}}\
 window.vf={marks:[],cur:-1};\
 window.vfZoom=function(z){var fs=all();for(var i=0;i<fs.length;i++){try{var d=fs[i].contentDocument;\
 if(d&&d.documentElement)d.documentElement.style.zoom=z;fs[i]._h=0;s(fs[i]);}catch(_){}}};\
 window.vfDocs=function(){var ds=[document];var fs=document.querySelectorAll('iframe');\
 for(var i=0;i<fs.length;i++){try{if(fs[i].contentDocument)ds.push(fs[i].contentDocument);}catch(_){}}return ds;};\
-window.vfCss=function(d){if(d.getElementById('vireo-find-css'))return;\
-var st=d.createElement('style');st.id='vireo-find-css';\
-st.textContent='.vireo-find{background:rgba(255,198,0,0.5);color:#000;border-radius:5px;box-shadow:0 0 0 2px rgba(255,198,0,0.5);}.vireo-find.current{background:#ffc600;box-shadow:0 0 0 2px #ffc600;}';\
+window.vfCss=function(d){if(d.getElementById('hylki-find-css'))return;\
+var st=d.createElement('style');st.id='hylki-find-css';\
+st.textContent='.hylki-find{background:rgba(255,198,0,0.5);color:#000;border-radius:5px;box-shadow:0 0 0 2px rgba(255,198,0,0.5);}.hylki-find.current{background:#ffc600;box-shadow:0 0 0 2px #ffc600;}';\
 (d.head||d.documentElement).appendChild(st);};\
 window.hylkiFindClear=function(){for(var i=0;i<vf.marks.length;i++){var m=vf.marks[i];\
 var p=m.parentNode;if(!p)continue;while(m.firstChild)p.insertBefore(m.firstChild,m);p.removeChild(m);p.normalize();}\
 vf.marks=[];vf.cur=-1;};\
 window.vfPost=function(){try{window.webkit.messageHandlers.hylki.postMessage(\
 'found:0:0:'+(vf.marks.length?vf.cur+1:0)+','+vf.marks.length);}catch(_){}};\
-window.vfShow=function(){for(var i=0;i<vf.marks.length;i++)vf.marks[i].className='vireo-find'+(i===vf.cur?' current':'');\
+window.vfShow=function(){for(var i=0;i<vf.marks.length;i++)vf.marks[i].className='hylki-find'+(i===vf.cur?' current':'');\
 vfPost();\
 var m=vf.marks[vf.cur];if(!m)return;\
 var d=m.ownerDocument;\
@@ -7221,7 +7320,7 @@ var text=node.nodeValue,lower=text.toLowerCase(),pos=0,idx;\
 var frag=d.createDocumentFragment(),had=false;\
 while((idx=lower.indexOf(q,pos))>=0){had=true;\
 frag.appendChild(d.createTextNode(text.slice(pos,idx)));\
-var sp=d.createElement('span');sp.className='vireo-find';\
+var sp=d.createElement('span');sp.className='hylki-find';\
 sp.textContent=text.slice(idx,idx+q.length);\
 frag.appendChild(sp);vf.marks.push(sp);pos=idx+q.length;}\
 frag.appendChild(d.createTextNode(text.slice(pos)));\
@@ -7229,46 +7328,46 @@ if(had)node.parentNode.replaceChild(frag,node);}}\
 vf.marks=vf.marks.filter(function(m){return m.getClientRects().length>0;});\
 if(vf.marks.length){vf.marks.sort(function(a,b){return vfY(a)-vfY(b);});\
 vf.cur=0;vfShow();}else{vfPost();}}else{vfPost();}};\
-var rs=document.querySelectorAll('.vireo-rcpt-toggle');\
+var rs=document.querySelectorAll('.hylki-rcpt-toggle');\
 for(var r=0;r<rs.length;r++){rs[r].addEventListener('click',function(e){\
 e.stopPropagation();e.preventDefault();\
-var h=this.closest('.vireo-msg-hdr');var b=h?h.querySelector('.vireo-rcpt'):null;if(!b)return;\
+var h=this.closest('.hylki-msg-hdr');var b=h?h.querySelector('.hylki-rcpt'):null;if(!b)return;\
 var on=b.hasAttribute('hidden');\
 if(on)b.removeAttribute('hidden');else b.setAttribute('hidden','');\
 this.classList.toggle('open',on);\
 this.setAttribute('title',on?'Hide recipients':'Show recipients');});\
 rs[r].addEventListener('dblclick',function(e){e.stopPropagation();});}\
 document.addEventListener('click',function(e){\
-if(e.target&&e.target.closest&&e.target.closest('.vireo-msg'))return;\
+if(e.target&&e.target.closest&&e.target.closest('.hylki-msg'))return;\
 try{window.webkit.messageHandlers.hylki.postMessage('desel:0:0');}catch(_){}});\
 document.addEventListener('click',function(e){\
-var t=e.target&&e.target.closest?e.target.closest('.vireo-attc,.vireo-attsave'):null;if(!t)return;\
+var t=e.target&&e.target.closest?e.target.closest('.hylki-attc,.hylki-attsave'):null;if(!t)return;\
 e.stopPropagation();e.preventDefault();\
-var verb=t.classList.contains('vireo-attsave')?'attsave':'attopen';\
+var verb=t.classList.contains('hylki-attsave')?'attsave':'attopen';\
 try{window.webkit.messageHandlers.hylki.postMessage(verb+':'+t.dataset.key+':'+t.dataset.idx);}catch(_){}},true);\
-var ms=document.querySelectorAll('.vireo-msg');\
+var ms=document.querySelectorAll('.hylki-msg');\
 for(var q=0;q<ms.length;q++){ms[q].addEventListener('click',function(e){\
 var k=this.dataset.key;if(k)pick(k,e);});}\
-var actsDelay=parseInt(document.body.dataset.vireoActsdelay||'0',10)||1200;\
+var actsDelay=parseInt(document.body.dataset.hylkiActsdelay||'0',10)||1200;\
 document.documentElement.style.setProperty('--acts-delay',actsDelay+'ms');\
-var actsMenu=document.body.dataset.vireoActsmenu==='1';\
-var ts=document.querySelectorAll('.vireo-acts-toggle');\
+var actsMenu=document.body.dataset.hylkiActsmenu==='1';\
+var ts=document.querySelectorAll('.hylki-acts-toggle');\
 for(var t=0;t<ts.length;t++){ts[t].addEventListener('click',function(e){\
 e.stopPropagation();e.preventDefault();\
 if(actsMenu){var br=this.getBoundingClientRect();\
 try{window.webkit.messageHandlers.hylki.postMessage('cardmenu:'+this.dataset.key+':'\
 +br.left+','+br.bottom+','+window.innerWidth);}catch(_){}return;}\
-var h=this.closest('.vireo-msg-hdr');var ac=h?h.querySelector('.vireo-acts'):null;if(!ac)return;\
+var h=this.closest('.hylki-msg-hdr');var ac=h?h.querySelector('.hylki-acts'):null;if(!ac)return;\
 var on=!ac.classList.contains('open');\
 ac.classList.toggle('open',on);this.classList.toggle('open',on);});\
 ts[t].addEventListener('dblclick',function(e){e.stopPropagation();});}\
 for(var q2=0;q2<ms.length;q2++){(function(card){var timer=null;\
 card.addEventListener('mouseleave',function(){\
-var ac=card.querySelector('.vireo-acts.open');if(!ac)return;\
+var ac=card.querySelector('.hylki-acts.open');if(!ac)return;\
 timer=setTimeout(function(){ac.classList.remove('open');\
-var tg=card.querySelector('.vireo-acts-toggle');if(tg)tg.classList.remove('open');},actsDelay);});\
+var tg=card.querySelector('.hylki-acts-toggle');if(tg)tg.classList.remove('open');},actsDelay);});\
 card.addEventListener('mouseenter',function(){if(timer){clearTimeout(timer);timer=null;}});})(ms[q2]);}\
-var as=document.querySelectorAll('.vireo-act');\
+var as=document.querySelectorAll('.hylki-act');\
 for(var k=0;k<as.length;k++){as[k].addEventListener('click',function(e){\
 e.stopPropagation();e.preventDefault();reportPos();\
 if(this.dataset.act==='star')this.classList.toggle('on');\
@@ -7276,18 +7375,18 @@ var extra='';if(this.dataset.act==='moveto'){var br=this.getBoundingClientRect()
 extra=':'+(br.left+br.width/2)+','+br.bottom+','+window.innerWidth;}\
 try{window.webkit.messageHandlers.hylki.postMessage(this.dataset.act+':'+this.dataset.key+extra);}catch(_){}});\
 as[k].addEventListener('dblclick',function(e){e.stopPropagation();});}\
-document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('.vireo-unsub-btn'):null;\
+document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('.hylki-unsub-btn'):null;\
 if(!b)return;e.stopPropagation();e.preventDefault();\
 var v=b.dataset.tpl?'tpl:'+b.dataset.key+':'+b.dataset.tpl:'unsub:'+b.dataset.key;\
 try{window.webkit.messageHandlers.hylki.postMessage(v);}catch(_){}});\
-document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('.vireo-tr-btn'):null;\
+document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('.hylki-tr-btn'):null;\
 if(!b)return;e.stopPropagation();e.preventDefault();\
 try{window.webkit.messageHandlers.hylki.postMessage('tr:'+b.dataset.key);}catch(_){}});\
-document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('.vireo-inv-btn'):null;\
+document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('.hylki-inv-btn'):null;\
 if(!b)return;e.stopPropagation();e.preventDefault();\
 try{window.webkit.messageHandlers.hylki.postMessage('invite:'+b.dataset.key+':'+b.dataset.inv);}catch(_){}});\
 });\
-function markClipped(){var as=document.querySelectorAll('.vireo-addr');\
+function markClipped(){var as=document.querySelectorAll('.hylki-addr');\
 for(var i=0;i<as.length;i++){var a=as[i];\
 a.classList.toggle('clipped',a.scrollWidth>a.clientWidth+1);}}\
 function hideMailMenu(){var m=window.__hylkiMailMenu;\
@@ -7296,11 +7395,11 @@ var sc=window.__hylkiMailScrim;\
 if(sc&&sc.parentNode)sc.parentNode.removeChild(sc);window.__hylkiMailScrim=null;}\
 function mailMsg(mail){try{window.webkit.messageHandlers.hylki.postMessage('composeto:0:0:'+mail);}catch(_){}}\
 function showMailMenu(x,y,mail){hideMailMenu();\
-var sc=document.createElement('div');sc.className='vireo-mailmenu-scrim';\
+var sc=document.createElement('div');sc.className='hylki-mailmenu-scrim';\
 ['mousedown','contextmenu'].forEach(function(ev){sc.addEventListener(ev,function(e){\
 if(ev==='mousedown')e.preventDefault();e.stopPropagation();hideMailMenu();});});\
 document.body.appendChild(sc);window.__hylkiMailScrim=sc;\
-var mn=document.createElement('div');mn.className='vireo-mailmenu';\
+var mn=document.createElement('div');mn.className='hylki-mailmenu';\
 function item(label,fn){var b=document.createElement('button');b.type='button';\
 b.textContent=label;b.addEventListener('click',function(ev){\
 ev.stopPropagation();ev.preventDefault();hideMailMenu();fn();});mn.appendChild(b);}\
@@ -7315,8 +7414,8 @@ document.body.appendChild(mn);window.__hylkiMailMenu=mn;}\
    between cards. And the selected text, for Copy. A right-click anywhere\
    else dismisses the address menu, as a click does. */\
 window.__hylkiMenuAt=function(x,y,w){hideMailMenu();var r=window.innerWidth/w;x*=r;y*=r;\
-var el=document.elementFromPoint(x,y);var m=el&&el.closest?el.closest('.vireo-msg'):null;\
-if(!m){var ms=document.querySelectorAll('.vireo-msg'),d=1e9;\
+var el=document.elementFromPoint(x,y);var m=el&&el.closest?el.closest('.hylki-msg'):null;\
+if(!m){var ms=document.querySelectorAll('.hylki-msg'),d=1e9;\
 for(var i=0;i<ms.length;i++){var b=ms[i].getBoundingClientRect();\
 var e=y<b.top?b.top-y:(y>b.bottom?y-b.bottom:0);if(e<d){d=e;m=ms[i];}}}\
 var sel='';try{sel=String(window.getSelection()||'');\
@@ -7329,23 +7428,23 @@ document.addEventListener('click',function(e){var m=window.__hylkiMailMenu;\
 if(m&&e.target&&m.contains(e.target))return;hideMailMenu();},true);\
 window.addEventListener('scroll',hideMailMenu,{passive:true});\
 document.addEventListener('click',function(e){\
-var t=e.target&&e.target.closest?e.target.closest('.vireo-mail'):null;\
+var t=e.target&&e.target.closest?e.target.closest('.hylki-mail'):null;\
 if(!t||!t.dataset.mail)return;\
 e.preventDefault();e.stopPropagation();mailMsg(t.dataset.mail);},true);\
 document.addEventListener('click',function(e){\
-var v=e.target&&e.target.closest?e.target.closest('.vireo-verify,.vireo-pgp'):null;\
+var v=e.target&&e.target.closest?e.target.closest('.hylki-verify,.hylki-pgp'):null;\
 if(!v||!v.dataset.key)return;e.preventDefault();e.stopPropagation();\
 var r=v.getBoundingClientRect();\
 try{window.webkit.messageHandlers.hylki.postMessage(\
 'senderinfo:'+v.dataset.key+':'+r.left+','+r.top+','+r.width+','+r.height+','+window.innerWidth);}catch(_){}},true);\
 document.addEventListener('contextmenu',function(e){\
-var t=e.target&&e.target.closest?e.target.closest('.vireo-mail'):null;\
+var t=e.target&&e.target.closest?e.target.closest('.hylki-mail'):null;\
 if(!t||!t.dataset.mail)return;\
 e.preventDefault();e.stopPropagation();\
 showMailMenu(e.clientX,e.clientY,t.dataset.mail);},true);\
 window.addEventListener('resize',function(){var fs=all();for(var i=0;i<fs.length;i++)s(fs[i]);\
 markClipped();});\
-var _st;function reportPos(){var ms=document.querySelectorAll('.vireo-msg');\
+var _st;function reportPos(){var ms=document.querySelectorAll('.hylki-msg');\
 var best=null,off=0;\
 for(var i=0;i<ms.length;i++){var r=ms[i].getBoundingClientRect();\
 if(r.top<=1){best=ms[i];off=Math.max(0,-r.top);}else break;}\
@@ -7355,7 +7454,7 @@ window.addEventListener('scroll',function(){clearTimeout(_st);\
 _st=setTimeout(reportPos,120);},{passive:true});\
 var follow=null,hold=null;\
 function selAll(e){if(!(e.ctrlKey||e.metaKey)||e.altKey||(e.key!=='a'&&e.key!=='A'))return;\
-if(!document.body||!document.body.classList.contains('vireo-conv'))return;\
+if(!document.body||!document.body.classList.contains('hylki-conv'))return;\
 e.preventDefault();e.stopPropagation();\
 try{window.webkit.messageHandlers.hylki.postMessage('selall:0:0');}catch(_){}}\
 window.addEventListener('keydown',selAll,true);\
@@ -7380,9 +7479,9 @@ function copySel(e){if(!(e.ctrlKey||e.metaKey)||e.altKey||e.shiftKey||(e.key!=='
 var s=window.getSelection();if(s&&!s.isCollapsed&&String(s).length)return;\
 if(window.__hylkiCopySel()){e.preventDefault();e.stopPropagation();}}\
 function showCopied(){var b=document.body;if(!b)return;\
-var p=document.getElementById('vireo-copied');\
-if(!p){p=document.createElement('div');p.id='vireo-copied';p.className='vireo-copied';b.appendChild(p);}\
-p.textContent=b.dataset.vireoCopied||'Copied';\
+var p=document.getElementById('hylki-copied');\
+if(!p){p=document.createElement('div');p.id='hylki-copied';p.className='hylki-copied';b.appendChild(p);}\
+p.textContent=b.dataset.hylkiCopied||'Copied';\
 void p.offsetHeight;p.classList.add('on');clearTimeout(p._t);\
 p._t=setTimeout(function(){p.classList.remove('on');},1400);}\
 window.addEventListener('keydown',copySel,true);\
@@ -7395,7 +7494,7 @@ var d=Math.round(r.top+hold.off-(hold.g?gutter():0));if(d)window.scrollBy(0,d);}
 window.addEventListener(ev,function(){follow=null;hold=null;},{passive:true,capture:true});});\
 window.addEventListener('blur',function(){setTimeout(function(){\
 var a=document.activeElement;\
-if(a&&a.tagName==='IFRAME'&&a.classList&&a.classList.contains('vireo-frame')&&a.dataset.key){\
+if(a&&a.tagName==='IFRAME'&&a.classList&&a.classList.contains('hylki-frame')&&a.dataset.key){\
 reportPos();\
 try{window.webkit.messageHandlers.hylki.postMessage('sel:'+a.dataset.key+':p');}catch(_){}\
 try{a.blur();window.focus();}catch(_){}}},0);});";
@@ -7458,7 +7557,7 @@ fn message_frame(
         // correctly on its first frame. Without it every card starts at the
         // browser's default and jumps once its content is measured, which is a
         // visible lurch on a thread that has simply been reopened.
-        // The `.vireo-pan` wrapper is the horizontal scroller for mail wider
+        // The `.hylki-pan` wrapper is the horizontal scroller for mail wider
         // than the pane. The frame itself is widened to its content (see
         // `s(f)`), so the sandboxed document is never scrollable — WebKit
         // latches wheel gestures to the innermost scrollable area under the
@@ -7466,7 +7565,7 @@ fn message_frame(
         // vertical wheel deltas it cannot use, leaving the reader stuck.
         // A top-document div has no such latch: unused vertical deltas
         // bubble on to the page.
-        "<div class=\"vireo-pan\"><iframe class=\"vireo-frame\" data-key=\"{aid}:{id}\"{style} \
+        "<div class=\"hylki-pan\"><iframe class=\"hylki-frame\" data-key=\"{aid}:{id}\"{style} \
          sandbox=\"allow-same-origin allow-popups\" srcdoc=\"{doc}\"></iframe></div>",
         aid = key.0,
         id = key.1,
@@ -7530,7 +7629,7 @@ fn inline_body(doc: &str) -> String {
 /// Inlining costs the isolation an iframe gave: with every message in one
 /// document, one sender's `body{font-family:monospace}` would restyle the whole
 /// printout, including the next message in the conversation. Redirecting those
-/// selectors to `.vireo-print-msg` keeps the rule working where it is meant to
+/// selectors to `.hylki-print-msg` keeps the rule working where it is meant to
 /// and nowhere else. Bare type selectors (`p`, `a`) still reach across, which is
 /// the remaining price of printing a thread as one page.
 fn scope_styles(doc: &str, block: &str) -> String {
@@ -7623,13 +7722,13 @@ const PRINT_DOCUMENT_STYLES: &str = "\
     img,table,pre{max-width:100% !important;}\
     img{height:auto !important;}\
     pre{white-space:pre-wrap;}\
-    .vireo-print-msg + .vireo-print-msg{border-top:1pt solid #999;margin-top:12pt;padding-top:12pt;}\
-    .vireo-print-msghdr{font:bold 10pt/1.45 system-ui,sans-serif;color:#000;margin:0 0 8pt;}\
-    .vireo-print-hdr{display:block;padding:0 0 10pt;margin:0 0 12pt;\
+    .hylki-print-msg + .hylki-print-msg{border-top:1pt solid #999;margin-top:12pt;padding-top:12pt;}\
+    .hylki-print-msghdr{font:bold 10pt/1.45 system-ui,sans-serif;color:#000;margin:0 0 8pt;}\
+    .hylki-print-hdr{display:block;padding:0 0 10pt;margin:0 0 12pt;\
       border-bottom:1pt solid #999;font:10pt/1.45 system-ui,sans-serif;color:#000;}\
-    .vireo-print-subject{font-size:14pt;font-weight:700;margin:0 0 8pt;}\
-    .vireo-print-row{margin:0 0 2pt;}\
-    .vireo-print-label{font-weight:700;}";
+    .hylki-print-subject{font-size:14pt;font-weight:700;margin:0 0 8pt;}\
+    .hylki-print-row{margin:0 0 2pt;}\
+    .hylki-print-label{font-weight:700;}";
 
 /// The header block that only appears on paper: subject, who it is from and to,
 /// and when.
@@ -7641,7 +7740,7 @@ const PRINT_DOCUMENT_STYLES: &str = "\
 /// are hidden with `@media`.
 /// The class naming the `n`th message's block in the printed document.
 fn print_block_class(n: usize) -> String {
-    format!("vireo-print-m{n}")
+    format!("hylki-print-m{n}")
 }
 
 /// Assemble the printed page: the header, then every message inlined into it.
@@ -7653,7 +7752,7 @@ fn print_document(
     let mut body = header.to_string();
     for (n, (head, doc)) in messages.iter().enumerate() {
         let block = print_block_class(n);
-        body.push_str(&format!("<article class=\"vireo-print-msg {block}\">"));
+        body.push_str(&format!("<article class=\"hylki-print-msg {block}\">"));
         body.push_str(head);
         body.push_str(&scope_styles(&inline_body(doc), &format!(".{block}")));
         body.push_str("</article>");
@@ -7684,7 +7783,7 @@ fn print_message_header_html(m: &Message) -> String {
         )
     };
     format!(
-        "<div class=\"vireo-print-msghdr\">{from} — {date}</div>",
+        "<div class=\"hylki-print-msghdr\">{from} — {date}</div>",
         date = escape_text(&m.datetime_full())
     )
 }
@@ -7699,7 +7798,7 @@ fn print_header_html(message: Option<&Message>) -> String {
             return String::new();
         }
         format!(
-            "<div class=\"vireo-print-row\"><span class=\"vireo-print-label\">{}</span> {}</div>",
+            "<div class=\"hylki-print-row\"><span class=\"hylki-print-label\">{}</span> {}</div>",
             escape_text(label),
             escape_text(value)
         )
@@ -7717,8 +7816,8 @@ fn print_header_html(message: Option<&Message>) -> String {
         m.subject.clone()
     };
     format!(
-        "<div class=\"vireo-print-hdr\">\
-           <div class=\"vireo-print-subject\">{subject}</div>{from}{to}{cc}{date}\
+        "<div class=\"hylki-print-hdr\">\
+           <div class=\"hylki-print-subject\">{subject}</div>{from}{to}{cc}{date}\
          </div>",
         subject = escape_text(&subject),
         from = row(&i18n("From:"), &from),
@@ -7755,7 +7854,7 @@ fn body_html(body: &str) -> String {
             "<!doctype html><html><head><meta charset=\"utf-8\"><style>\
              body{{margin:0;padding:20px;font:14px/1.5 system-ui,sans-serif;\
              white-space:pre-wrap;word-wrap:break-word}}\
-             </style></head><body class=\"vireo-plain\">{}</body></html>",
+             </style></head><body class=\"hylki-plain\">{}</body></html>",
             escape_text(body)
         )
     }
@@ -7785,16 +7884,16 @@ mod tests {
     #[test]
     fn a_message_takes_its_own_direction() {
         let plain = auto_direction(&body_html("سلام\nHello"));
-        assert!(plain.contains("<body dir=\"auto\" class=\"vireo-plain\">"), "{plain}");
-        assert!(plain.contains("body,.vireo-plain{unicode-bidi:plaintext;}"), "{plain}");
+        assert!(plain.contains("<body dir=\"auto\" class=\"hylki-plain\">"), "{plain}");
+        assert!(plain.contains("body,.hylki-plain{unicode-bidi:plaintext;}"), "{plain}");
 
         let html = auto_direction("<html><head></head><body class=\"x\"><p>x</p></body></html>");
         assert!(html.contains("<body dir=\"auto\" class=\"x\">"), "{html}");
         assert!(!html.contains("unicode-bidi"), "{html}");
 
-        let parts = auto_direction("<html><body><div class=\"vireo-plain\">a</div></body></html>");
-        assert!(parts.contains(".vireo-plain{unicode-bidi:plaintext;}"), "{parts}");
-        assert!(!parts.contains("body,.vireo-plain"), "{parts}");
+        let parts = auto_direction("<html><body><div class=\"hylki-plain\">a</div></body></html>");
+        assert!(parts.contains(".hylki-plain{unicode-bidi:plaintext;}"), "{parts}");
+        assert!(!parts.contains("body,.hylki-plain"), "{parts}");
 
         // The sender's own direction stands, on either element.
         for own in [
@@ -7847,10 +7946,10 @@ mod tests {
             &crate::config::ReaderStyle::NONE,
             &Default::default(),
             false, 100);
-        assert!(doc.contains("<div class=\"vireo-inv\" data-key=\"1:1\"></div>"), "{doc}");
+        assert!(doc.contains("<div class=\"hylki-inv\" data-key=\"1:1\"></div>"), "{doc}");
         // And above the body, not below it: the meeting is the point of the
         // message, and the calendar's own prose repeats it underneath.
-        let inv = doc.find("<div class=\"vireo-inv\"").expect("the container");
+        let inv = doc.find("<div class=\"hylki-inv\"").expect("the container");
         let body = doc.find("<iframe").expect("the body frame");
         assert!(inv < body, "the banner comes before the body");
     }
@@ -7860,7 +7959,7 @@ mod tests {
     fn the_invitation_row_is_keyed_to_its_card() {
         assert_eq!(
             invite_row_html((2, 9), ""),
-            "<div class=\"vireo-inv\" data-key=\"2:9\"></div>"
+            "<div class=\"hylki-inv\" data-key=\"2:9\"></div>"
         );
         assert!(invite_row_html((2, 9), "<b>x</b>").ends_with("<b>x</b></div>"));
     }
@@ -7938,16 +8037,16 @@ mod tests {
             CardAttachment { name: "<b>x</b>.png".into(), size: 10 },
         ];
         let row = att_row_html((1, 7), Some(&atts));
-        assert!(row.starts_with("<div class=\"vireo-atts\" data-key=\"1:7\">"), "{row}");
-        assert_eq!(row.matches("class=\"vireo-attc ").count(), 2, "{row}");
-        assert!(row.contains("class=\"vireo-attc ftype-pdf\" data-key=\"1:7\" data-idx=\"0\""), "{row}");
-        assert!(row.contains("class=\"vireo-attc ftype-image\" data-key=\"1:7\" data-idx=\"1\""), "{row}");
-        assert!(row.contains("class=\"vireo-attsave\" data-key=\"1:7\" data-idx=\"1\""), "{row}");
+        assert!(row.starts_with("<div class=\"hylki-atts\" data-key=\"1:7\">"), "{row}");
+        assert_eq!(row.matches("class=\"hylki-attc ").count(), 2, "{row}");
+        assert!(row.contains("class=\"hylki-attc ftype-pdf\" data-key=\"1:7\" data-idx=\"0\""), "{row}");
+        assert!(row.contains("class=\"hylki-attc ftype-image\" data-key=\"1:7\" data-idx=\"1\""), "{row}");
+        assert!(row.contains("class=\"hylki-attsave\" data-key=\"1:7\" data-idx=\"1\""), "{row}");
         assert!(row.contains(&crate::models::human_size(2048)), "{row}");
         assert!(!row.contains("<b>x</b>"), "filename is escaped: {row}");
         assert!(row.contains("&lt;b&gt;x&lt;/b&gt;.png"), "{row}");
         // Nothing attached: the row is there, and empty.
-        assert_eq!(att_row_html((1, 8), None), "<div class=\"vireo-atts\" data-key=\"1:8\"></div>");
+        assert_eq!(att_row_html((1, 8), None), "<div class=\"hylki-atts\" data-key=\"1:8\"></div>");
     }
 
     // ===== Dark-mode color adaptation (issue #35) =====
@@ -8086,7 +8185,7 @@ mod tests {
     #[test]
     fn reader_style_none_adds_nothing() {
         let frame = message_frame("<p>x</p>", true, false, (1, 1), None, &crate::config::ReaderStyle::NONE, "#3584e4", false, 100);
-        assert!(!frame.contains(":not(#vireo-a)"), "{frame}");
+        assert!(!frame.contains(":not(#hylki-a)"), "{frame}");
         assert_eq!(inject_reader_style("<p>x</p>", ""), "<p>x</p>");
     }
 
@@ -8099,13 +8198,13 @@ mod tests {
         let body = "<html><head><style>p{font-family:Comic Sans MS}</style></head>\
                     <body><p style=\"font-size:30px\">x</p></body></html>";
         let frame = message_frame(body, true, false, (1, 1), None, &style, "#3584e4", false, 100);
-        let ours = frame.find(":root :not(#vireo-a):not(#vireo-b):not(#vireo-c)").expect("override sheet");
+        let ours = frame.find(":root :not(#hylki-a):not(#hylki-b):not(#hylki-c)").expect("override sheet");
         let theirs = frame.find("Comic Sans").expect("sender css kept");
         assert!(ours > theirs, "the reader's sheet must come last: {frame}");
         // srcdoc attribute: quotes are escaped, so match the family unquoted.
         assert!(frame.contains("DejaVu Serif&quot;,sans-serif !important;font-size:12pt !important"), "{frame}");
-        assert!(frame.contains("h1:not(#vireo-a):not(#vireo-b):not(#vireo-c){font-size:calc(12pt * 1.6) !important"), "{frame}");
-        assert!(frame.contains(":is(pre,code,kbd,samp,tt):not(#vireo-a):not(#vireo-b):not(#vireo-c){font-family:monospace !important"), "{frame}");
+        assert!(frame.contains("h1:not(#hylki-a):not(#hylki-b):not(#hylki-c){font-size:calc(12pt * 1.6) !important"), "{frame}");
+        assert!(frame.contains(":is(pre,code,kbd,samp,tt):not(#hylki-a):not(#hylki-b):not(#hylki-c){font-family:monospace !important"), "{frame}");
         // Colors untouched: no color rule was asked for.
         assert!(!frame.contains("-webkit-text-fill-color"), "{frame}");
     }
@@ -8119,7 +8218,7 @@ mod tests {
         let body = r#"<p style="color:#000;background:#ff0">x <a href="https://e.example">l</a></p>"#;
         let light = message_frame(body, true, false, (1, 1), None, &style, "#3584e4", false, 100);
         assert!(light.contains("color:#1a1a1a !important;-webkit-text-fill-color:#1a1a1a !important;background-color:transparent !important;background-image:none !important"), "{light}");
-        assert!(light.contains(":root a:not(#vireo-a):not(#vireo-b):not(#vireo-c),:root a:not(#vireo-a):not(#vireo-b):not(#vireo-c) *{color:#3584e4 !important"), "{light}");
+        assert!(light.contains(":root a:not(#hylki-a):not(#hylki-b):not(#hylki-c),:root a:not(#hylki-a):not(#hylki-b):not(#hylki-c) *{color:#3584e4 !important"), "{light}");
         assert!(!light.contains("font-family"), "no font rule was asked for: {light}");
         let dark = message_frame(body, true, true, (1, 1), None, &style, "#3584e4", false, 100);
         assert!(dark.contains("color:#e6e6e6 !important"), "{dark}");
@@ -8177,8 +8276,8 @@ mod tests {
             &escaped,
             false, 100);
         assert_eq!(doc.matches("data-act=\"senderfmt\"").count(), 2, "{doc}");
-        assert_eq!(doc.matches("class=\"vireo-act on\" data-act=\"senderfmt\"").count(), 1, "{doc}");
-        assert_eq!(doc.matches(":root :not(#vireo-a)").count(), 1, "only the other card is styled: {doc}");
+        assert_eq!(doc.matches("class=\"hylki-act on\" data-act=\"senderfmt\"").count(), 1, "{doc}");
+        assert_eq!(doc.matches(":root :not(#hylki-a)").count(), 1, "only the other card is styled: {doc}");
 
         // No override: no toggle, nothing injected.
         let plain = MessageView::conversation_document(
@@ -8196,7 +8295,7 @@ mod tests {
             &escaped,
             false, 100);
         assert!(!plain.contains("senderfmt"), "{plain}");
-        assert!(!plain.contains(":not(#vireo-a)"), "{plain}");
+        assert!(!plain.contains(":not(#hylki-a)"), "{plain}");
     }
 
     /// The sheet goes in before `</body>` (or `</html>`), and at the very end
@@ -8268,14 +8367,14 @@ mod tests {
             &Default::default(),
             false, 100);
         assert_eq!(
-            doc.matches("<section class=\"vireo-msg\"").count(),
+            doc.matches("<section class=\"hylki-msg\"").count(),
             2,
             "each message gets its own card: {doc}"
         );
         let ada = doc.find("Ada Lovelace").expect("first sender present");
         let grace = doc.find("Grace Hopper").expect("second sender present");
         assert!(ada < grace, "cards must keep the order they were handed");
-        assert!(doc.contains("<body class=\"vireo-conv\">"), "conversation padding");
+        assert!(doc.contains("<body class=\"hylki-conv\">"), "conversation padding");
         // The cards sit on the deeper page — the same color the spinner and the
         // cover behind the WebView are painted, so the handover is invisible.
         assert!(doc.contains(&format!("background:{}", PAGE.0)), "page ground: {doc}");
@@ -8349,7 +8448,7 @@ mod tests {
         )]);
         let doc = build(std::slice::from_ref(&mine));
         assert!(
-            doc.contains("<img class=\"vireo-ava\" src=\"data:image/png;base64,"),
+            doc.contains("<img class=\"hylki-ava\" src=\"data:image/png;base64,"),
             "the picture is embedded in the card: {doc}"
         );
         assert!(!doc.contains("\u{1F98A}"), "the picture wins over the emoji: {doc}");
@@ -8388,12 +8487,12 @@ mod tests {
             &Default::default(),
             false, 100);
         assert_eq!(
-            doc.matches("class=\"vireo-rcpt\" hidden").count(),
+            doc.matches("class=\"hylki-rcpt\" hidden").count(),
             2,
             "each card gets a collapsed To/Cc block: {doc}"
         );
         assert_eq!(
-            doc.matches("class=\"vireo-rcpt-toggle\"").count(),
+            doc.matches("class=\"hylki-rcpt-toggle\"").count(),
             2,
             "each card gets a recipients chip: {doc}"
         );
@@ -8427,7 +8526,7 @@ mod tests {
             &Default::default(),
             false, 100);
         assert_eq!(
-            doc.matches("<button type=\"button\" class=\"vireo-rcpt-toggle\"").count(),
+            doc.matches("<button type=\"button\" class=\"hylki-rcpt-toggle\"").count(),
             1,
             "only the second card: {doc}"
         );
@@ -8460,12 +8559,12 @@ mod tests {
         let blocked = doc_for(true);
         assert_eq!(blocked.matches("data-act=\"remote\"").count(), 1, "{blocked}");
         assert!(blocked.contains("Show remote content"), "{blocked}");
-        assert!(!blocked.contains("class=\"vireo-act on\" data-act=\"remote\""), "not lit while blocked");
+        assert!(!blocked.contains("class=\"hylki-act on\" data-act=\"remote\""), "not lit while blocked");
         // Showing it, the same button offers to put the block back, and is lit.
         let shown = doc_for(false);
         assert_eq!(shown.matches("data-act=\"remote\"").count(), 1, "{shown}");
         assert!(shown.contains("Block remote content"), "{shown}");
-        assert!(shown.contains("class=\"vireo-act on\" data-act=\"remote\""), "lit while showing: {shown}");
+        assert!(shown.contains("class=\"hylki-act on\" data-act=\"remote\""), "lit while showing: {shown}");
     }
 
     /// Each card carries its own Reply/Reply all/Forward, keyed to that message
@@ -8525,10 +8624,10 @@ mod tests {
             &crate::config::ReaderStyle::NONE,
             &Default::default(),
             false, 100);
-        assert_eq!(doc.matches("class=\"vireo-dot\"").count(), 1, "one dot: {doc}");
-        assert_eq!(doc.matches("class=\"vireo-end\"").count(), 0, "no sentinel: {doc}");
+        assert_eq!(doc.matches("class=\"hylki-dot\"").count(), 1, "one dot: {doc}");
+        assert_eq!(doc.matches("class=\"hylki-end\"").count(), 0, "no sentinel: {doc}");
         // Keyed to the unread message, so reading it can't clear another's.
-        assert!(doc.contains("class=\"vireo-dot\" data-key=\"1:2\""), "{doc}");
+        assert!(doc.contains("class=\"hylki-dot\" data-key=\"1:2\""), "{doc}");
     }
 
     /// Marking a message unread while its conversation is open must survive the
@@ -8556,8 +8655,8 @@ mod tests {
             &crate::config::ReaderStyle::NONE,
             &Default::default(),
             false, 100);
-        assert_eq!(doc.matches("class=\"vireo-dot\"").count(), 1, "still marked: {doc}");
-        assert_eq!(doc.matches("class=\"vireo-end\"").count(), 0, "no sentinel: {doc}");
+        assert_eq!(doc.matches("class=\"hylki-dot\"").count(), 1, "still marked: {doc}");
+        assert_eq!(doc.matches("class=\"hylki-end\"").count(), 0, "no sentinel: {doc}");
     }
 
     /// A frame opens at the height it had last time, so a reopened conversation
@@ -8612,8 +8711,8 @@ mod tests {
             &crate::config::ReaderStyle::NONE,
             &Default::default(),
             false, 100);
-        assert!(doc.contains("class=\"vireo-msg selected\" data-key=\"1:2\""), "{doc}");
-        assert_eq!(doc.matches("vireo-msg selected").count(), 1, "only the selected one");
+        assert!(doc.contains("class=\"hylki-msg selected\" data-key=\"1:2\""), "{doc}");
+        assert_eq!(doc.matches("hylki-msg selected").count(), 1, "only the selected one");
         assert!(doc.contains("box-shadow:0 0 0 2px #ff8800"), "outlined in the accent: {doc}");
     }
 
@@ -8637,9 +8736,9 @@ mod tests {
             &crate::config::ReaderStyle::NONE,
             &Default::default(),
             false, 100);
-        assert!(doc.contains("<section class=\"vireo-msg\""), "message chrome: {doc}");
-        assert!(doc.contains("class=\"vireo-msg-hdr\""), "in-document header: {doc}");
-        assert!(!doc.contains("<body class=\"vireo-conv\">"), "no card gutter: {doc}");
+        assert!(doc.contains("<section class=\"hylki-msg\""), "message chrome: {doc}");
+        assert!(doc.contains("class=\"hylki-msg-hdr\""), "in-document header: {doc}");
+        assert!(!doc.contains("<body class=\"hylki-conv\">"), "no card gutter: {doc}");
         assert!(doc.contains("data-act=\"reply\""), "card actions present: {doc}");
         // Full-bleed also means the plain ground, not the cards' deeper page.
         assert!(doc.contains(&format!("background:{}", GROUND.0)), "plain ground: {doc}");
@@ -8664,7 +8763,7 @@ mod tests {
             &crate::config::ReaderStyle::NONE,
             &Default::default(),
             false, 100);
-        assert!(doc.contains("<body class=\"vireo-conv\">"), "card gutter: {doc}");
+        assert!(doc.contains("<body class=\"hylki-conv\">"), "card gutter: {doc}");
         assert!(doc.contains(&format!("background:{}", PAGE.0)), "deeper page ground: {doc}");
     }
 
@@ -8677,7 +8776,7 @@ mod tests {
         let labels = std::collections::HashMap::from([((1u32, 2u32), "Sent".to_string())]);
         let doc = MessageView::conversation_document(&[a, b], &labels, &Default::default(), &Default::default(), &[], "#3584e4", true, false, false, false, &crate::config::ReaderStyle::NONE, &Default::default(), false, 100);
         assert_eq!(
-            doc.matches("class=\"vireo-folder\"").count(),
+            doc.matches("class=\"hylki-folder\"").count(),
             // on the message that came from Sent, and never on the one the
             // reader is already showing the folder of.
             1,
@@ -8945,13 +9044,13 @@ mod tests {
         let probe = "JSON.stringify({\
                pwned: typeof window.__pwned !== 'undefined',\
                ours: ['s','init','all'].every(f => typeof window[f] === 'function'),\
-               heights: [...document.querySelectorAll('iframe.vireo-frame')]\
+               heights: [...document.querySelectorAll('iframe.hylki-frame')]\
                           .map(f => f.style.height),\
                readable: (function(){ try { \
-                 return document.querySelector('iframe.vireo-frame')\
+                 return document.querySelector('iframe.hylki-frame')\
                           .contentDocument.body.innerText.trim(); \
                } catch (e) { return 'blocked'; } })(),\
-               from: document.querySelector('.vireo-from').textContent\
+               from: document.querySelector('.hylki-from').textContent\
              })";
         let mut json = String::new();
         while std::time::Instant::now() < deadline {
@@ -9027,7 +9126,7 @@ mod tests {
         // cut off at the frame's on-screen height, because a print engine draws an
         // iframe as a box rather than paginating what is inside it.
         let doc = print_document(
-            "<div class=\"vireo-print-hdr\">HEADER</div>",
+            "<div class=\"hylki-print-hdr\">HEADER</div>",
             &[(
                 String::new(),
                 "<!DOCTYPE html><html><head><style>p{color:red}</style></head>\
@@ -9070,18 +9169,18 @@ mod tests {
             "<style>body{font-family:monospace}\
              @media print{html,body>p{color:red}}\
              .bodyguard{margin:0}</style><p>hi</p>",
-            ".vireo-print-m1",
+            ".hylki-print-m1",
         );
-        assert!(out.contains(".vireo-print-m1{font-family:monospace}"), "{out}");
+        assert!(out.contains(".hylki-print-m1{font-family:monospace}"), "{out}");
         assert!(
-            out.contains("@media print{.vireo-print-m1,.vireo-print-m1>p{color:red}}"),
+            out.contains("@media print{.hylki-print-m1,.hylki-print-m1>p{color:red}}"),
             "{out}"
         );
         // Only whole tag names: a class that merely contains "body" is untouched,
         // and so are declarations that mention one.
         assert!(out.contains(".bodyguard{margin:0}"), "{out}");
         assert!(out.contains("<p>hi</p>"));
-        assert!(!scope_styles("<p>body{x}</p>", ".vireo-print-m0").contains("vireo-print-m0"));
+        assert!(!scope_styles("<p>body{x}</p>", ".hylki-print-m0").contains("hylki-print-m0"));
         // Each message gets a class of its own, so the first sender's rules stop
         // at the first message.
         let doc = print_document(
@@ -9092,8 +9191,8 @@ mod tests {
             ],
             false,
         );
-        assert!(doc.contains(".vireo-print-m0{color:red}"), "{doc}");
-        assert!(doc.contains("vireo-print-msg vireo-print-m1"), "{doc}");
+        assert!(doc.contains(".hylki-print-m0{color:red}"), "{doc}");
+        assert!(doc.contains("hylki-print-msg hylki-print-m1"), "{doc}");
     }
 
     #[test]

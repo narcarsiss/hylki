@@ -109,12 +109,11 @@ pub fn tray_image(id: &str) -> std::borrow::Cow<'static, [u8]> {
     let path = if std::path::Path::new(&icon).is_absolute() {
         Some(std::path::PathBuf::from(&icon))
     } else {
-        gtk::gdk::Display::default().and_then(|display| {
-            gtk::IconTheme::for_display(&display)
-                .lookup_icon(&icon, &[], 256, 1, gtk::TextDirection::None, gtk::IconLookupFlags::empty())
-                .file()
-                .and_then(|f| gtk::gio::prelude::FileExt::path(&f))
-        })
+        // In the desktop's icon folders: Hylki's own search leaves them out.
+        crate::app::desktop_icon_theme()
+            .lookup_icon(&icon, &[], 256, 1, gtk::TextDirection::None, gtk::IconLookupFlags::empty())
+            .file()
+            .and_then(|f| gtk::gio::prelude::FileExt::path(&f))
     };
     match path.and_then(|p| std::fs::read(p).ok()) {
         Some(bytes) => Cow::Owned(bytes),
@@ -215,6 +214,38 @@ fn hicolor_dir() -> Option<PathBuf> {
     Some(host_data_home()?.join("icons/hicolor"))
 }
 
+/// An icon folder only Hylki writes to, which its own icon lookups search in
+/// place of the shared ones (`apply_icon_theme` in app.rs): the chosen app
+/// icon is copied here so the window finds it by name.
+pub fn private_icons_root() -> Option<PathBuf> {
+    Some(dirs::data_dir()?.join("hylki/icons"))
+}
+
+/// Keep the private folder's copy of the chosen icon, and nothing else of
+/// ours there.
+fn sync_private_icon(id: &str, name: &str, write: bool) {
+    let Some(dir) = private_icons_root().map(|r| r.join("hicolor/512x512/apps")) else { return };
+    let prefix = format!("{}-", crate::APP_ID);
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if fname.starts_with(&prefix) && fname != format!("{name}.png") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    if !write {
+        return;
+    }
+    let path = dir.join(format!("{name}.png"));
+    if std::fs::read(&path).is_ok_and(|cur| cur == png_for(id)) {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, png_for(id))) {
+        tracing::warn!("could not keep the app icon in {}: {e}", dir.display());
+    }
+}
+
 /// The icon sizes the install ships — every one is written under the
 /// chosen name, so whichever a desktop asks for resolves to the choice.
 const SIZES: [i32; 2] = [512, 256];
@@ -238,9 +269,12 @@ fn apply(id: &str, replace_custom: bool) {
     if !replace_custom {
         if let Some(icon) = launcher.custom_icon() {
             tracing::info!("the launcher's icon ({icon}) was set outside Hylki, leaving it");
-            // A theme name serves the windows too; a file path cannot.
-            let window_icon = if icon.contains('/') { crate::APP_ID } else { icon.as_str() };
-            gtk::Window::set_default_icon_name(window_icon);
+            // A theme name serves the windows too, where Hylki's icon search
+            // finds it; a file path cannot.
+            let found = !icon.contains('/')
+                && gtk::gdk::Display::default()
+                    .is_some_and(|d| gtk::IconTheme::for_display(&d).has_icon(&icon));
+            gtk::Window::set_default_icon_name(if found { icon.as_str() } else { crate::APP_ID });
             return;
         }
     }
@@ -251,6 +285,7 @@ fn apply(id: &str, replace_custom: bool) {
     // like any other choice.
     let own_file = !is_default || matches!(launcher, Launcher::Owned(_));
     sync_icon_files(&hicolor, id, &name, own_file);
+    sync_private_icon(id, &name, own_file);
     let path = hicolor.join("512x512/apps").join(format!("{name}.png"));
     launcher.point_at(&path.to_string_lossy(), is_default && !own_file);
     // Hylki's own windows (X11, panels that draw window icons).

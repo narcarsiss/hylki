@@ -380,7 +380,22 @@ fn build(s: &Spec) -> Message {
             .unwrap_or_default(),
         importance: Default::default(),
         due: 0,
-        labels: Vec::new(),
+        labels: demo_labels(s.id),
+    }
+}
+
+/// Gmail labels on some of the demo's mail, for captures of their pills
+/// (#374). Only with HYLKI_DEMO_LABELS set: the demo the README shows has
+/// none.
+fn demo_labels(id: u32) -> Vec<String> {
+    if std::env::var_os("HYLKI_DEMO_LABELS").is_none() {
+        return Vec::new();
+    }
+    match id % 4 {
+        0 => vec!["Clients/Acme".into(), "Travel".into()],
+        1 => vec!["Receipts".into()],
+        2 => vec!["Newsletters".into(), "Family".into()],
+        _ => Vec::new(),
     }
 }
 

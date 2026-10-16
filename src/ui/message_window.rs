@@ -125,7 +125,8 @@ pub enum MessageWindowInput {
     /// Reflect a star toggle that happened elsewhere (or came back from the app).
     SetStarred(bool),
     /// The message's keywords changed (#71).
-    SetKeywords(Vec<String>),
+    /// Keywords and Gmail labels (#374).
+    SetKeywords(Vec<String>, Vec<String>),
     /// The tag definitions changed.
     SetTags(Vec<crate::config::Tag>),
     /// A member's downloaded attachments are now available.
@@ -566,17 +567,20 @@ impl Component for MessageWindow {
                 self.msg.unread = unread;
                 self.sync_toolbar();
             }
-            MessageWindowInput::SetKeywords(keywords) => {
+            MessageWindowInput::SetKeywords(keywords, labels) => {
                 self.msg.keywords = keywords.clone();
+                self.msg.labels = labels.clone();
                 for m in self.thread.iter_mut() {
                     if m.account_id == self.msg.account_id && m.id == self.msg.id {
                         m.keywords = keywords.clone();
+                        m.labels = labels.clone();
                     }
                 }
                 self.view.emit(MessageViewInput::SetCardKeywords {
                     account_id: self.msg.account_id,
                     id: self.msg.id,
                     keywords,
+                    labels,
                 });
             }
             MessageWindowInput::SetTags(tags) => {

@@ -60,6 +60,10 @@ _TRANSLATIONS = {
         "label": "Küldés a Vireóval",
         "tip": "A kijelölt fájlok csatolása egy új üzenethez a Vireóban",
     },
+    "it": {
+        "label": "Invia con Hylki",
+        "tip": "Allega i file selezionati a un nuovo messaggio in Hylki",
+    },
     "pl": {
         "label": "Wyślij za pomocą aplikacji Hylki",
         "tip": "Załącz zaznaczone pliki do nowej wiadomości w aplikacji Hylki",
